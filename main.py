@@ -150,7 +150,7 @@ def main_loop():
                         fixture = m.get('fixture', {})
                         teams = m.get('teams', {})
                         kickoff = fixture.get('date')
-                        match_name = f"{teams.get('home', {}).get('name')} vs {teams.get('away', {}).get('name')}")
+                        match_name = f"{teams.get('home', {}).get('name')} vs {teams.get('away', {}).get('name')}"
                         tip_text = format_prematch_tip(match_name, kickoff, 'Hazai győzelem', 68, 2.10)
                         ok = send_telegram(tip_text)
                         if ok:
