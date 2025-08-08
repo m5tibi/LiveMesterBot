@@ -57,8 +57,8 @@ while True:
     else:
         msg = f"⏸ Félidős tipp!\\ Meccs: {match}\\n🔮 Tipp: {tip_text}\\n🕒 Tipp időpontja: {datetime.now(BUDAPEST_TZ).strftime('%Y-%m-%d %H:%M')}"
     Meccs: {match}
-🔮 Tipp: {tip_text}
-🕒 Tipp időpontja: {datetime.now(BUDAPEST_TZ).strftime('%Y-%m-%d %H:%M')}"
+    Tipp: {tip_text}
+    Tipp időpontja: {datetime.now(BUDAPEST_TZ).strftime('%Y-%m-%d %H:%M')}"
         send_telegram_message(msg)
         sent_ids.add(fixture_id)
         save_json(SENT_TIPS_FILE, list(sent_ids))
