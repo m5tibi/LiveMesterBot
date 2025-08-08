@@ -1,2 +1,4 @@
-# LiveMesterBot v1.1
-Most már nem küld ismételt tippeket, és legalább 10 percet vár új ajánlás előtt.
+# LiveMesterBot v1.2
+- Félidős tippek külön jelölve
+- Budapest időzóna
+- Automatikus statisztika (stats.json)
