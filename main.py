@@ -131,7 +131,7 @@ def main_loop():
                 sent = 0
                 for m in live:
                     teams = m.get('teams', {})
-                    match_name = f"{teams.get('home', {}).get('name')} vs {teams.get('away', {}).get('name')}")
+                    match_name = f"{teams.get('home', {}).get('name')} vs {teams.get('away', {}).get('name')}"
                     tip_text = format_live_tip(match_name, 'Következő gól: home', 71, 1.90)
                     ok = send_telegram(tip_text)
                     if ok:
