@@ -24,7 +24,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
           RAPIDAPI_HOST: api-football-v1.p.rapidapi.com
-          POLL_SECONDS: 60
+          POLL_SECONDS: 180
           ACTIVE_HOURS_START: "10:00"
           ACTIVE_HOURS_END: "23:00"
           PEAK_HOURS_START: "18:00"
