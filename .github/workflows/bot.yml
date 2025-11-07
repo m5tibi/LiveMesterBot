@@ -1,30 +1,37 @@
 name: LiveMesterBot (batch)
 
-# TILTSUK A PÁRHUZAMOS FUTÁST
+# --- Párhuzamos futások tiltása ---
 concurrency:
   group: livemesterbot
   cancel-in-progress: true
 
+# --- Időzített és kézi futtatás ---
 on:
   schedule:
-    - cron: "*/15 9-22 * * *"   # 15 percenként 10:00–23:00 CET körül
+    - cron: "*/15 9-22 * * *"   # 15 percenként (10:00–23:00 Budapest idő)
   workflow_dispatch:
 
 jobs:
   run:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
+    steps:
+      # --- Repo letöltése ---
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # --- Python környezet telepítése ---
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install deps
+      # --- Függőségek telepítése ---
+      - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run bot (short session, cron will restart)
+      # --- LiveMesterBot futtatása ---
+      - name: Run LiveMesterBot (short 10-min session)
         run: python livemesterbot.py
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -32,19 +39,51 @@ jobs:
           RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
           RAPIDAPI_HOST: api-football-v1.p.rapidapi.com
 
-          # Ajánlott paraméterek (spam-mentes és limitkímélő)
-          POLL_SECONDS: "180"
+          # --- Beállítások ---
+          POLL_SECONDS: "180"                # lekérdezésenként 3 perc
           ACTIVE_HOURS_START: "10:00"
           ACTIVE_HOURS_END: "23:00"
           PEAK_HOURS_START: "18:00"
           PEAK_HOURS_END: "22:00"
-          PEAK_POLL_SECONDS: "90"
+          PEAK_POLL_SECONDS: "90"            # csúcsidőben 1.5 percenként
           MAX_FIXTURES_PER_CYCLE: "10"
           PEAK_MAX_FIXTURES_PER_CYCLE: "15"
           STATS_COOLDOWN_MIN: "6"
           TIMEZONE: Europe/Budapest
 
-          # ÚJ: vezérlő flag-ek
-          RUN_MINUTES: "10"            # 10 percig fusson, majd leáll – a cron újraindítja
-          MUTE_NO_SIGNAL: "1"          # ne küldjön 'nincs jel' / 'nincs adat' üzenetet
-          SEND_ONLINE_ON_START: "1"    # induláskor egy 'online' üzenet mehet
+          # --- Vezérlő flag-ek ---
+          RUN_MINUTES: "10"                  # 10 perc futás, majd leállás
+          MUTE_NO_SIGNAL: "1"                # ne küldjön 'nincs adat' üzenetet
+          SEND_ONLINE_ON_START: "1"          # induláskor küld egy 'online' üzenetet
+
+      # --- Napló commitálása a repo-ba nap szerint ---
+      - name: Commit logs to repo (data/YYYY-MM-DD/events.csv)
+        if: always()   # akkor is fusson, ha nem volt találat
+        run: |
+          set -e
+          DATE=$(TZ=Europe/Budapest date +%F)
+          mkdir -p "data/$DATE"
+          TARGET="data/$DATE/events.csv"
+
+          if [ -f logs/events.csv ]; then
+            echo "📁 Másolás a data/$DATE mappába..."
+            if [ -f "$TARGET" ]; then
+              # fejléc elhagyása a második és további appendnél
+              tail -n +2 logs/events.csv >> "$TARGET"
+            else
+              cp logs/events.csv "$TARGET"
+            fi
+
+            echo "📝 Commitálás GitHubra..."
+            git config user.name "github-actions"
+            git config user.email "actions@github.com"
+            git add "$TARGET"
+            git commit -m "chore(data): append events $DATE [skip ci]" || echo "Nincs új adat commitálva."
+            git push
+          else
+            echo "⚠️ Nincs új logs/events.csv ebben a futásban."
+          fi
+
+      # --- Folyamat vége ---
+      - name: Finish
+        run: echo "✅ LiveMesterBot workflow complete."
