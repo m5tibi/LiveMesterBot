@@ -1,27 +1,30 @@
 name: LiveMesterBot Daily Summary
 
+# Napi összesítő 23:05-kor (Budapest idő szerint).
+# Figyelem: a GitHub Actions CRON UTC-ben van. Téli időszámban 22:05 UTC = 23:05 Budapest.
+# Ha nyári időben is pontosan 23:05-öt szeretnél, tegyél be egy MÁSODIK cron sort "5 21 * * *"-tel is.
 on:
   schedule:
-    - cron: "5 22 * * *"   # 23:05 Europe/Budapest ~ 22:05 UTC (téli idő); nyáron 21:05-öt is be lehet tenni külön
+    - cron: "5 22 * * *"   # 22:05 UTC ~ 23:05 Europe/Budapest (téli idő)
   workflow_dispatch:
 
 jobs:
   summarize:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install deps
+      - name: Install deps for summary
         run: pip install requests pytz
 
-      - name: Run summarizer
+      - name: Run daily summary
+        run: python daily_summary.py
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          python daily_summary.py
