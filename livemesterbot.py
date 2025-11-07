@@ -27,6 +27,12 @@ PEAK_MAX_FIXTURES_PER_CYCLE = int(os.getenv("PEAK_MAX_FIXTURES_PER_CYCLE","15"))
 STATS_COOLDOWN_MIN = int(os.getenv("STATS_COOLDOWN_MIN","6"))
 
 TIMEZONE = os.getenv("TIMEZONE","Europe/Budapest")
+
+# ÚJ: némítás és időzített kilépés
+MUTE_NO_SIGNAL = os.getenv("MUTE_NO_SIGNAL", "1") == "1"       # 1 = ne küldjön 'nincs jel'/'nincs adat' üzenetet
+SEND_ONLINE_ON_START = os.getenv("SEND_ONLINE_ON_START", "1") == "1"
+RUN_MINUTES = int(os.getenv("RUN_MINUTES", "10"))              # 0 = végtelen; Actions-hez javasolt 10
+
 tz = pytz.timezone(TIMEZONE)
 
 LOG_DIR = "logs"
@@ -158,6 +164,7 @@ def select_top_fixtures(fixtures, limit):
         if status not in ("1H","HT","2H"):
             continue
         total_goals = (goals.get("home",0) or 0) + (goals.get("away",0) or 0)
+        # alacsony gólszám preferencia
         score_pref = 1 if total_goals <= 1 else 0
         scored.append((score_pref, fx))
     scored.sort(key=lambda t: t[0], reverse=True)
@@ -264,15 +271,23 @@ def log_event(row: dict):
         })
 
 def main():
-    send_message(f"✅ <b>LiveMesterBot (TEST) online</b>\n🕒 {now_str()}")
+    if SEND_ONLINE_ON_START:
+        send_message(f"✅ <b>LiveMesterBot (TEST) online</b>\n🕒 {now_str()}")
+
+    start_time = time.time()
+
     while True:
         poll, max_fx = current_limits()
         if poll == 0:
+            # inaktív sávban ritkábban ébredünk fel
             time.sleep(60)
+            # időzített kilépés ellenőrzés (Actions)
+            if RUN_MINUTES > 0 and (time.time() - start_time) >= RUN_MINUTES * 60:
+                break
             continue
 
         fixtures, err = fetch_live_fixtures()
-        if err:
+        if err and not MUTE_NO_SIGNAL:
             send_message(f"ℹ️ <b>Info</b>: {err}")
 
         fixtures_with_stats = []
@@ -305,9 +320,15 @@ def main():
                     send_message(msg)
                     log_event(s)
             else:
-                send_message(f"💤 Nincs erős jel ebben a ciklusban. ({now_str()})")
+                if not MUTE_NO_SIGNAL:
+                    send_message(f"💤 Nincs erős jel ebben a ciklusban. ({now_str()})")
         else:
-            send_message(f"📭 Nincs elég stat/élő adat ebben a ciklusban. ({now_str()})")
+            if not MUTE_NO_SIGNAL:
+                send_message(f"📭 Nincs elég stat/élő adat ebben a ciklusban. ({now_str()})")
+
+        # Időzített kilépés (Actions): pl. 10 perc után zárjuk a futást, cron indítja újra
+        if RUN_MINUTES > 0 and (time.time() - start_time) >= RUN_MINUTES * 60:
+            break
 
         time.sleep(poll)
 
