@@ -1,14 +1,14 @@
 name: LiveMesterBot (batch)
 
-# --- Párhuzamos futások tiltása ---
+# Ne fusson párhuzamosan
 concurrency:
   group: livemesterbot
   cancel-in-progress: true
 
-# --- Időzített és kézi futtatás ---
+# 05:00–23:00 Europe/Budapest → UTC-ben 04–22
 on:
   schedule:
-    - cron: "*/15 9-22 * * *"   # 15 percenként (10:00–23:00 Budapest idő)
+    - cron: "*/15 4-22 * * *"   # 15 percenként 05:00–23:00 CET (UTC+1 => 04–22 UTC)
   workflow_dispatch:
 
 jobs:
@@ -16,22 +16,18 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # --- Repo letöltése ---
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # --- Python környezet telepítése ---
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # --- Függőségek telepítése ---
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # --- LiveMesterBot futtatása ---
-      - name: Run LiveMesterBot (short 10-min session)
+      - name: Run LiveMesterBot (10-min session; cron restarts)
         run: python livemesterbot.py
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -39,51 +35,79 @@ jobs:
           RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
           RAPIDAPI_HOST: api-football-v1.p.rapidapi.com
 
-          # --- Beállítások ---
-          POLL_SECONDS: "180"                # lekérdezésenként 3 perc
-          ACTIVE_HOURS_START: "10:00"
+          # Időzítés és kérés-keret (≈ ≤5000/nap)
+          POLL_SECONDS: "150"             # 2.5 perc
+          ACTIVE_HOURS_START: "05:00"
           ACTIVE_HOURS_END: "23:00"
           PEAK_HOURS_START: "18:00"
           PEAK_HOURS_END: "22:00"
-          PEAK_POLL_SECONDS: "90"            # csúcsidőben 1.5 percenként
-          MAX_FIXTURES_PER_CYCLE: "10"
-          PEAK_MAX_FIXTURES_PER_CYCLE: "15"
-          STATS_COOLDOWN_MIN: "6"
+          PEAK_POLL_SECONDS: "120"        # csúcsban 2 perc
+
+          # Ciklusonként ennyi meccsre kérünk statot
+          MAX_FIXTURES_PER_CYCLE: "12"
+          PEAK_MAX_FIXTURES_PER_CYCLE: "16"
+
+          # Ugyanarra a meccsre min. ennyi perc két statlekérés között
+          STATS_COOLDOWN_MIN: "5"
+
           TIMEZONE: Europe/Budapest
 
-          # --- Vezérlő flag-ek ---
-          RUN_MINUTES: "10"                  # 10 perc futás, majd leállás
-          MUTE_NO_SIGNAL: "1"                # ne küldjön 'nincs adat' üzenetet
-          SEND_ONLINE_ON_START: "1"          # induláskor küld egy 'online' üzenetet
+          # Futási modell
+          RUN_MINUTES: "10"               # 10 perc futás / job
+          MUTE_NO_SIGNAL: "1"             # ne küldjön 'nincs jel' üzeneteket
+          SEND_ONLINE_ON_START: "1"       # induláskor egyszeri 'online'
 
-      # --- Napló commitálása a repo-ba nap szerint ---
+          # Piacok engedélyezése
+          ENABLE_NEXT_GOAL: "1"
+          ENABLE_OVER: "1"
+          ENABLE_DNB: "1"
+          ENABLE_LATE_GOAL: "1"
+          ENABLE_UNDER: "0"               # később bekapcsolható
+
+          # Küszöbök (finomhangolhatók)
+          NG_DOM: "1.6"
+          NG_SHOTS: "1.5"
+          NG_XG: "1.4"
+
+          OVER_MINUTE_START: "45"
+          OVER_XG_SUM: "1.6"
+          OVER_SHOTS_SUM: "6"
+
+          DNB_DOM: "1.6"
+          DNB_SHOTS: "1.5"
+          DNB_XG: "1.4"
+
+          LATE_MINUTE_START: "70"
+          LATE_XG_SUM: "2.0"
+          LATE_SHOTS_SUM: "12"
+          LATE_DA_RUN: "15"               # utolsó ~10 percben veszélyes támadás-run
+
+          # Jel-anti-spam
+          SIGNAL_COOLDOWN_MIN: "7"        # ugyanarra a meccsre min. 7 perc két jel között
+          MARKET_COOLDOWN_MIN: "10"       # ugyanarra a piacra min. 10 perc
+
+      # Napló commitálása (ha keletkezett jel)
       - name: Commit logs to repo (data/YYYY-MM-DD/events.csv)
-        if: always()   # akkor is fusson, ha nem volt találat
+        if: always()
         run: |
           set -e
           DATE=$(TZ=Europe/Budapest date +%F)
           mkdir -p "data/$DATE"
           TARGET="data/$DATE/events.csv"
-
           if [ -f logs/events.csv ]; then
-            echo "📁 Másolás a data/$DATE mappába..."
             if [ -f "$TARGET" ]; then
-              # fejléc elhagyása a második és további appendnél
               tail -n +2 logs/events.csv >> "$TARGET"
             else
               cp logs/events.csv "$TARGET"
             fi
-
-            echo "📝 Commitálás GitHubra..."
             git config user.name "github-actions"
             git config user.email "actions@github.com"
             git add "$TARGET"
-            git commit -m "chore(data): append events $DATE [skip ci]" || echo "Nincs új adat commitálva."
+            git commit -m "chore(data): append events $DATE [skip ci]" || echo "No changes"
             git push
           else
-            echo "⚠️ Nincs új logs/events.csv ebben a futásban."
+            echo "No local logs/events.csv produced in this run."
           fi
 
-      # --- Folyamat vége ---
       - name: Finish
         run: echo "✅ LiveMesterBot workflow complete."
