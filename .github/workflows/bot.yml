@@ -55,7 +55,7 @@ jobs:
           # Futási modell
           RUN_MINUTES: "10"               # 10 perc futás / job
           MUTE_NO_SIGNAL: "1"             # ne küldjön 'nincs jel' üzeneteket
-          SEND_ONLINE_ON_START: "1"       # induláskor egyszeri 'online'
+          SEND_ONLINE_ON_START: "0"       # 🔕 induláskor NE küldjön 'online' üzenetet
 
           # Piacok engedélyezése
           ENABLE_NEXT_GOAL: "1"
@@ -105,7 +105,7 @@ jobs:
             git add "$TARGET"
             git commit -m "chore(data): append events $DATE [skip ci]" || echo "No changes"
             git push
-          else
+          else:
             echo "No local logs/events.csv produced in this run."
           fi
 
