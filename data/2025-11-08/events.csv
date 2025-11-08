@@ -2,3 +2,7 @@ time,league,match,minute,score,pick,prob,odds,fixture_id,details,market
 2025-11-08 20:47:14,France Ligue 2,Estac Troyes – Saint Etienne,45,0:2,Over 2.5 (live),70.3,,1389244,"{'xg_sum': None, 'shots_sum': 9.0}",OVER
 2025-11-08 20:47:15,Ecuador Liga Pro,Manta FC – Mushuc Runa SC,45,2:0,Over 2.5 (live),69.5,,1479601,"{'xg_sum': None, 'shots_sum': 7.0}",OVER
 2025-11-08 20:47:15,Brazil Serie A,Sport Recife – Atletico-MG,45,1:0,Over 1.5 (live),65.6,,1351372,"{'xg_sum': None, 'shots_sum': 5.0}",OVER
+2025-11-08 20:56:32,Romania Liga I,Rapid – Arges Pitesti,64,1:0,Over 1.5 (live),65.8,,1385883,"{'xg_sum': None, 'shots_sum': 8.0}",OVER
+2025-11-08 21:02:39,Poland Ekstraklasa,GKS Katowice – Piast Gliwice,45,0:2,Over 2.5 (live),67.0,,1380511,"{'xg_sum': None, 'shots_sum': 4.0}",OVER
+2025-11-08 21:04:42,Brazil Serie A,Sport Recife – Atletico-MG,46,1:0,Over 1.5 (live),65.5,,1351372,"{'xg_sum': None, 'shots_sum': 5.0}",OVER
+2025-11-08 21:04:43,Netherlands Eredivisie,Fortuna Sittard – Heerenveen,47,0:0,Over 0.5 (live),64.8,,1380969,"{'xg_sum': None, 'shots_sum': 7.0}",OVER
