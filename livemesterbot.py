@@ -96,6 +96,9 @@ OVER_MIN_ODDS = float(os.getenv("OVER_MIN_ODDS","0"))  # 0 → kikapcsolva; pl. 
 DEBUG_LOG = os.getenv("DEBUG_LOG","1") == "1"
 DEBUG_FILE = "logs/debug.csv"
 
+# --- /summary parancs „frissesség-ablak” másodpercben (default 120) ---
+SUMMARY_CMD_WINDOW_SEC = int(os.getenv("SUMMARY_CMD_WINDOW_SEC","120"))
+
 tz = pytz.timezone(TIMEZONE)
 
 LOG_DIR = "logs"
@@ -173,14 +176,24 @@ def _write_update_offset(val: int):
         pass
 
 def poll_and_handle_commands():
-    """Rövid polling a futás elején: /summary csak az ADMIN-tól."""
+    """
+    Rövid polling a futás elején:
+    - /summary csak az ADMIN-tól
+    - csak FRISS üzenetre (SUMMARY_CMD_WINDOW_SEC)
+    - futásonként max 1x
+    """
     if not TELEGRAM_BOT_TOKEN:
         return
     base = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
-    offset = _read_update_offset()
+
+    offset = _read_update_offset()  # runnerben nem állandó; frissesség-szűrő megoldja a duplázást
     params = {"timeout": 0}
     if offset:
         params["offset"] = offset + 1
+
+    ran_summary_this_run = False
+    now_unix = int(time.time())
+
     try:
         r = requests.get(f"{base}/getUpdates", params=params, timeout=15)
         if r.status_code != 200:
@@ -188,6 +201,7 @@ def poll_and_handle_commands():
         data = r.json()
         updates = data.get("result", []) or []
         max_update_id = offset
+
         for up in updates:
             uid = up.get("update_id", 0)
             if uid and uid > max_update_id:
@@ -197,6 +211,8 @@ def poll_and_handle_commands():
             text = (msg.get("text") or "").strip()
             chat = msg.get("chat") or {}
             chat_id = str(chat.get("id") or "")
+            msg_date = int(msg.get("date") or 0)  # unix time
+
             if not text or not chat_id:
                 continue
 
@@ -204,7 +220,14 @@ def poll_and_handle_commands():
             if not TELEGRAM_ADMIN_CHAT_ID or chat_id != TELEGRAM_ADMIN_CHAT_ID:
                 continue
 
+            # Csak FRISS parancsot fogadjunk el (pl. utóbbi 120 mp)
+            if msg_date and (now_unix - msg_date) > SUMMARY_CMD_WINDOW_SEC:
+                continue
+
             if text.lower() == "/summary":
+                if ran_summary_this_run:
+                    # már futott ebben a ciklusban
+                    continue
                 if not HAS_SUMMARY:
                     send_message("⚠️ A /summary funkció nincs telepítve (daily_summary.py hiányzik).", chat_id)
                 else:
@@ -214,6 +237,7 @@ def poll_and_handle_commands():
                     os.environ["_TMP_SUMMARY_CHAT"] = chat_id
                     try:
                         run_daily_summary()
+                        ran_summary_this_run = True
                     except Exception as e:
                         send_message(f"⚠️ Hiba a summary futtatás közben: {e}", chat_id)
                     finally:
@@ -879,7 +903,7 @@ def format_signal_message(s, odds_line: str):
     )
 
 def main():
-    # 1) /summary parancsok kezelése a futás elején (csak ADMIN)
+    # 1) /summary parancsok kezelése a futás elején (csak ADMIN, friss üzenet, max 1x)
     poll_and_handle_commands()
 
     if SEND_ONLINE_ON_START:
