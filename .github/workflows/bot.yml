@@ -1,127 +1,113 @@
-name: LiveMesterBot (batch)
+name: LiveMesterBot
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 10 percenként indul. (A cron UTC-ben van; a bot amúgy is csak 05:00–23:00 között aktív BUD idő szerint.)
+    - cron: "*/10 * * * *"
 
 concurrency:
   group: livemesterbot
-  cancel-in-progress: false
-
-on:
-  schedule:
-    - cron: "*/15 4-22 * * *"
-  workflow_dispatch:
+  cancel-in-progress: true
 
 jobs:
   run:
     runs-on: ubuntu-latest
+    timeout-minutes: 12
+
+    env:
+      # --- Kötelező kulcsok (Secrets-ben tárolva) ---
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: "-1002780259470"
+
+      RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
+      RAPIDAPI_HOST: "api-football-v1.p.rapidapi.com"
+
+      # --- Üzemidő / gyakoriság / limit ---
+      TIMEZONE: "Europe/Budapest"
+      ACTIVE_HOURS_START: "05:00"
+      ACTIVE_HOURS_END:   "23:00"
+      PEAK_HOURS_START:   "18:00"
+      PEAK_HOURS_END:     "22:00"
+
+      POLL_SECONDS: "150"
+      PEAK_POLL_SECONDS: "120"
+      MAX_FIXTURES_PER_CYCLE: "12"
+      PEAK_MAX_FIXTURES_PER_CYCLE: "16"
+
+      # A runneren 8 percig fut egy ciklus; 10 perces triggert használunk, így szépen leáll és nem fut párhuzamosan.
+      RUN_MINUTES: "8"
+
+      # --- Piac-kapcsolók és küszöbök (jó defaultok) ---
+      ENABLE_NEXT_GOAL: "1"
+      ENABLE_OVER:      "1"
+      ENABLE_DNB:       "1"
+      ENABLE_LATE_GOAL: "1"
+      ENABLE_UNDER:     "0"
+
+      OVER_MINUTE_START: "42"
+      OVER_HARD_STOP:    "88"
+      OVER_XG_SUM:       "1.20"
+      OVER_SHOTS_SUM:    "4"
+      OVER_REQUIRE_XG:   "0"
+
+      LATE_MINUTE_START: "68"
+      LATE_XG_SUM:       "1.60"
+      LATE_SHOTS_SUM:    "9"
+      LATE_DA_RUN:       "10"
+      LATE_REQUIRE_XG:   "0"
+
+      NG_DOM: "1.35"
+      NG_SHOTS: "1.30"
+      NG_XG: "1.25"
+      NG_REQUIRE_XG: "0"
+
+      DNB_DOM: "1.45"
+      DNB_SHOTS: "1.35"
+      DNB_XG: "1.25"
+      DNB_REQUIRE_XG: "0"
+
+      SIGNAL_COOLDOWN_MIN: "7"
+      MARKET_COOLDOWN_MIN: "10"
+      STATS_COOLDOWN_MIN: "5"
+      MAX_SIGNALS_PER_DAY: "60"
+      ENABLE_RED_CARD_FILTER: "1"
+
+      # --- Üzenetküldés / debug ---
+      MUTE_NO_SIGNAL: "1"
+      SEND_ONLINE_ON_START: "0"
+      DEBUG_LOG: "1"
+      BACKOFF_MAX_SEC: "60"
+
+      # --- ODDS beállítások (EZEKET kérted) ---
+      ODDS_MODE: "shown"        # élő odds lekérés bekapcsolása
+      ODDS_BOOKMAKER: "bet365"  # preferált bukméker (opcionális)
+      OVER_MIN_ODDS: "1.25"     # ez alatti Over árnál NEM küld jelzést
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Run LiveMesterBot (8-min session; cron restarts)
-        timeout-minutes: 12
-        run: python livemesterbot.py
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
-          RAPIDAPI_HOST: api-football-v1.p.rapidapi.com
-
-          # Időzítés & kérés-keret
-          POLL_SECONDS: "150"
-          ACTIVE_HOURS_START: "05:00"
-          ACTIVE_HOURS_END: "23:00"
-          PEAK_HOURS_START: "18:00"
-          PEAK_HOURS_END: "22:00"
-          PEAK_POLL_SECONDS: "120"
-
-          MAX_FIXTURES_PER_CYCLE: "12"
-          PEAK_MAX_FIXTURES_PER_CYCLE: "16"
-          STATS_COOLDOWN_MIN: "5"
-          TIMEZONE: Europe/Budapest
-
-          RUN_MINUTES: "8"
-          MUTE_NO_SIGNAL: "1"
-          SEND_ONLINE_ON_START: "0"
-          BACKOFF_MAX_SEC: "60"
-
-          ENABLE_NEXT_GOAL: "1"
-          ENABLE_OVER: "1"
-          ENABLE_DNB: "1"
-          ENABLE_LATE_GOAL: "1"
-          ENABLE_UNDER: "0"
-
-          # Küszöbök (v2.3 + finomítások)
-          NG_DOM: "1.35"
-          NG_SHOTS: "1.30"
-          NG_XG: "1.25"
-          NG_REQUIRE_XG: "0"
-
-          OVER_MINUTE_START: "42"   # csak 42' után
-          OVER_XG_SUM: "1.20"
-          OVER_SHOTS_SUM: "4"
-          OVER_REQUIRE_XG: "0"
-
-          DNB_DOM: "1.45"
-          DNB_SHOTS: "1.35"
-          DNB_XG: "1.25"
-          DNB_REQUIRE_XG: "0"
-
-          LATE_MINUTE_START: "68"
-          LATE_XG_SUM: "1.60"
-          LATE_SHOTS_SUM: "9"
-          LATE_DA_RUN: "10"
-          LATE_REQUIRE_XG: "0"
-
-          SIGNAL_COOLDOWN_MIN: "7"
-          MARKET_COOLDOWN_MIN: "10"
-
-          ENABLE_RED_CARD_FILTER: "1"
-          MAX_SIGNALS_PER_DAY: "60"
-
-          DEBUG_LOG: "1"
-
-          # --- ÚJ: Live odds beállítások ---
-          ODDS_PROVIDER: "api_football"   # (api_football | none)
-          ODDS_MODE: "none"               # (none | shown)
-          ODDS_BOOKMAKER: "bet365"        # ha nincs egyezés, fallback: első elérhető
-
-      - name: Commit logs to repo (data/YYYY-MM-DD/events.csv)
-        if: always()
-        shell: bash
         run: |
-          set -euo pipefail
-          DATE=$(TZ=Europe/Budapest date +%F)
-          SRC="logs/events.csv"
-          TARGET_DIR="data/$DATE"
-          TARGET="$TARGET_DIR/events.csv"
-          echo "📄 Commit step – DATE=$DATE"
-          if [ ! -s "$SRC" ]; then
-            echo "ℹ️ Nincs helyi $SRC (nem keletkezett tipp ebben a futásban)."
-            exit 0
-          fi
-          mkdir -p "$TARGET_DIR"
-          if [ -f "$TARGET" ]; then
-            tail -n +2 "$SRC" >> "$TARGET" || { echo "❗ tail >> sikertelen"; exit 0; }
-          else
-            cp "$SRC" "$TARGET" || { echo "❗ cp sikertelen"; exit 0; }
-          fi
-          if [ ! -f "$TARGET" ]; then
-            echo "❗ A célfájl nem jött létre, commit kihagyva."
-            exit 0
-          fi
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
-          git add "$TARGET" || { echo "❗ git add sikertelen"; exit 0; }
-          git commit -m "chore(data): append events $DATE [skip ci]" || { echo "ℹ️ Nincs változás."; exit 0; }
-          git push || { echo "❗ git push sikertelen."; exit 0; }
+          pip install -r requirements.txt
 
-      - name: Finish
-        run: echo "✅ LiveMesterBot workflow complete."
+      - name: Run LiveMesterBot
+        run: |
+          python livemesterbot.py
+
+      # Opcionális log-artifact a futás végén (mindig lefut)
+      - name: Upload logs artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ github.run_id }}
+          path: |
+            logs/**
+          if-no-files-found: ignore
+          retention-days: 3
