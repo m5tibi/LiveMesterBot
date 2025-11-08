@@ -14,3 +14,7 @@ time,league,match,minute,score,pick,prob,odds,fixture_id,details,market
 2025-11-08 21:45:17,Argentina Liga Profesional Argentina,Racing Club – Defensa Y Justicia,45,1:0,Over 1.5 (live),68.1,,1374277,"{'xg_sum': None, 'shots_sum': 13.0}",OVER
 2025-11-08 21:45:18,Netherlands Eredivisie,PEC Zwolle – Sparta Rotterdam,45,1:0,Over 1.5 (live),68.1,,1380970,"{'xg_sum': None, 'shots_sum': 10.0}",OVER
 2025-11-08 21:45:19,England Premier League,Chelsea – Wolves,44,0:0,Over 0.5 (live),63.5,,1379071,"{'xg_sum': None, 'shots_sum': 5.0}",OVER
+2025-11-08 21:51:04,Poland Ekstraklasa,GKS Katowice – Piast Gliwice,70,0:2,Over 2.5 (live),67.3,,1380511,"{'xg_sum': None, 'shots_sum': 8.0}",OVER
+2025-11-08 21:51:05,Germany 2. Bundesliga,1. FC Kaiserslautern – Hertha BSC,61,0:1,Over 1.5 (live),66.2,,1388718,"{'xg_sum': None, 'shots_sum': 12.0}",OVER
+2025-11-08 21:51:06,England Premier League,Chelsea – Wolves,45,0:0,Over 0.5 (live),64.2,,1379071,"{'xg_sum': None, 'shots_sum': 6.0}",OVER
+2025-11-08 21:51:07,Switzerland Super League,Servette FC – FC Thun,63,0:0,Over 0.5 (live),63.7,,1382368,"{'xg_sum': None, 'shots_sum': 15.0}",OVER
