@@ -3,7 +3,7 @@ name: LiveMesterBot
 on:
   workflow_dispatch:
   schedule:
-    # 10 percenként indul. (A cron UTC-ben van; a bot amúgy is csak 05:00–23:00 között aktív BUD idő szerint.)
+    # 10 percenként indul. (A cron UTC-ben van.)
     - cron: "*/10 * * * *"
 
 concurrency:
@@ -14,6 +14,8 @@ jobs:
   run:
     runs-on: ubuntu-latest
     timeout-minutes: 12
+    permissions:
+      contents: write   # <- kell a git commit/push-hoz
 
     env:
       # --- Kötelező kulcsok (Secrets-ben tárolva) ---
@@ -35,10 +37,9 @@ jobs:
       MAX_FIXTURES_PER_CYCLE: "12"
       PEAK_MAX_FIXTURES_PER_CYCLE: "16"
 
-      # A runneren 8 percig fut egy ciklus; 10 perces triggert használunk, így szépen leáll és nem fut párhuzamosan.
       RUN_MINUTES: "8"
 
-      # --- Piac-kapcsolók és küszöbök (jó defaultok) ---
+      # --- Piac-kapcsolók és küszöbök ---
       ENABLE_NEXT_GOAL: "1"
       ENABLE_OVER:      "1"
       ENABLE_DNB:       "1"
@@ -79,8 +80,8 @@ jobs:
       DEBUG_LOG: "1"
       BACKOFF_MAX_SEC: "60"
 
-      # --- ODDS beállítások (EZEKET kérted) ---
-      ODDS_MODE: "shown"        # élő odds lekérés bekapcsolása
+      # --- ODDS beállítások ---
+      ODDS_MODE: "shown"        # élő odds lekérés
       ODDS_BOOKMAKER: "bet365"  # preferált bukméker (opcionális)
       OVER_MIN_ODDS: "1.25"     # ez alatti Over árnál NEM küld jelzést
 
@@ -101,7 +102,28 @@ jobs:
         run: |
           python livemesterbot.py
 
-      # Opcionális log-artifact a futás végén (mindig lefut)
+      - name: Persist today's events into data/YYYY-MM-DD
+        if: always()
+        run: |
+          set -e
+          if [ -f logs/events.csv ]; then
+            DATE=$(TZ="Europe/Budapest" date +%F)
+            mkdir -p "data/${DATE}"
+            # ha már van napi fájl, fűzzük hozzá a mai új sorokat (header nélkül)
+            if [ -f "data/${DATE}/events.csv" ]; then
+              tail -n +2 logs/events.csv >> "data/${DATE}/events.csv" || true
+            else
+              cp logs/events.csv "data/${DATE}/events.csv"
+            fi
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add "data/${DATE}/events.csv"
+            git commit -m "chore: persist events for ${DATE} [skip ci]" || echo "No changes"
+            git push
+          else
+            echo "No local logs/events.csv produced in this run."
+          fi
+
       - name: Upload logs artifact
         if: always()
         uses: actions/upload-artifact@v4
