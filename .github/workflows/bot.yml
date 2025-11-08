@@ -58,7 +58,7 @@ jobs:
           ENABLE_LATE_GOAL: "1"
           ENABLE_UNDER: "0"
 
-          # Küszöbök (v2.3 + kért finomítások)
+          # Küszöbök (v2.3 + finomítások)
           NG_DOM: "1.35"
           NG_SHOTS: "1.30"
           NG_XG: "1.25"
@@ -88,8 +88,10 @@ jobs:
 
           DEBUG_LOG: "1"
 
-          # ÚJ: odds megjelenítés módja (none|estimated)
-          ODDS_MODE: "none"
+          # --- ÚJ: Live odds beállítások ---
+          ODDS_PROVIDER: "api_football"   # (api_football | none)
+          ODDS_MODE: "none"               # (none | shown)
+          ODDS_BOOKMAKER: "bet365"        # ha nincs egyezés, fallback: első elérhető
 
       - name: Commit logs to repo (data/YYYY-MM-DD/events.csv)
         if: always()
