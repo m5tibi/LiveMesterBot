@@ -66,27 +66,23 @@ jobs:
           ENABLE_LATE_GOAL: "1"
           ENABLE_UNDER: "0"
 
-          # --- KÜSZÖBÖK (v2.3: még érzékenyebb, xG opcionális) ---
-          # Next Goal
+          # Küszöbök (v2.3 + xG opcionális a kódban)
           NG_DOM: "1.35"
           NG_SHOTS: "1.30"
-          NG_XG: "1.25"             # ha xG nincs, a kód figyelmen kívül hagyja
-          NG_REQUIRE_XG: "0"        # 0 = xG NEM kötelező
+          NG_XG: "1.25"
+          NG_REQUIRE_XG: "0"
 
-          # Over (élő)
-          OVER_MINUTE_START: "40"   # 45 -> 40
-          OVER_XG_SUM: "1.20"       # 1.4 -> 1.2 (ha van xG)
-          OVER_SHOTS_SUM: "4"       # 5 -> 4
+          OVER_MINUTE_START: "40"
+          OVER_XG_SUM: "1.20"
+          OVER_SHOTS_SUM: "4"
           OVER_REQUIRE_XG: "0"
 
-          # DNB
           DNB_DOM: "1.45"
           DNB_SHOTS: "1.35"
           DNB_XG: "1.25"
           DNB_REQUIRE_XG: "0"
 
-          # Late Goal
-          LATE_MINUTE_START: "68"   # 70 -> 68
+          LATE_MINUTE_START: "68"
           LATE_XG_SUM: "1.60"
           LATE_SHOTS_SUM: "9"
           LATE_DA_RUN: "10"
@@ -97,30 +93,63 @@ jobs:
           MARKET_COOLDOWN_MIN: "10"
 
           # DEBUG (csendben fájlba)
-          DEBUG_LOG: "1"            # 1 = ír debug CSV-t logs/debug.csv-be
+          DEBUG_LOG: "1"
 
-      # Napló commitálása (ha keletkezett jel)
+      # Napló commitálása (HA és CSAK HA van új events.csv)
       - name: Commit logs to repo (data/YYYY-MM-DD/events.csv)
         if: always()
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
+
           DATE=$(TZ=Europe/Budapest date +%F)
-          mkdir -p "data/$DATE"
-          TARGET="data/$DATE/events.csv"
-          if [ -f logs/events.csv ]; then
-            if [ -f "$TARGET" ]; then
-              tail -n +2 logs/events.csv >> "$TARGET"
-            else:
-              cp logs/events.csv "$TARGET"
-            fi
-            git config user.name "github-actions"
-            git config user.email "actions@github.com"
-            git add "$TARGET"
-            git commit -m "chore(data): append events $DATE [skip ci]" || echo "No changes"
-            git push
-          else
-            echo "No local logs/events.csv produced in this run."
+          SRC="logs/events.csv"
+          TARGET_DIR="data/$DATE"
+          TARGET="$TARGET_DIR/events.csv"
+
+          echo "📄 Commit step – DATE=$DATE"
+          echo "SRC=$SRC"
+          echo "TARGET=$TARGET"
+
+          # Ha nincs helyi log, nincs mit commitolni
+          if [ ! -s "$SRC" ]; then
+            echo "ℹ️ Nincs helyi $SRC (nem keletkezett tipp ebben a futásban)."
+            exit 0
           fi
+
+          # Célkönyvtár létrehozása
+          mkdir -p "$TARGET_DIR"
+
+          # Ha már létezik napi fájl, fűzzük (fejléc kihagyva); különben másoljuk
+          if [ -f "$TARGET" ]; then
+            echo "➕ Fűzés meglévő napi fájlhoz: $TARGET"
+            # Ha az SRC-nek van fejléce, ugorjuk az első sort
+            tail -n +2 "$SRC" >> "$TARGET" || {
+              echo "❗ tail >> sikertelen"; exit 0;
+            }
+          else
+            echo "🆕 Új napi fájl létrehozása: $TARGET"
+            cp "$SRC" "$TARGET" || {
+              echo "❗ cp sikertelen"; exit 0;
+            }
+          fi
+
+          # Biztonsági ellenőrzés – tényleg létrejött-e
+          if [ ! -f "$TARGET" ]; then
+            echo "❗ A célfájl nem létezik a másolás után sem, commit lépés kihagyva."
+            ls -la logs || true
+            ls -la "$TARGET_DIR" || true
+            exit 0
+          fi
+
+          echo "✅ Napi fájl kész, commitolás..."
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add "$TARGET" || { echo "❗ git add sikertelen, de nem hibáztatjuk a jobot."; exit 0; }
+          git commit -m "chore(data): append events $DATE [skip ci]" || {
+            echo "ℹ️ Nincs változás commitolni."; exit 0;
+          }
+          git push || { echo "❗ git push sikertelen (pl. nincs változás / hálózat)."; exit 0; }
 
       - name: Finish
         run: echo "✅ LiveMesterBot workflow complete."
