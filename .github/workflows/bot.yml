@@ -3,7 +3,7 @@ name: LiveMesterBot
 on:
   workflow_dispatch:
   schedule:
-    # 10 percenként indul. (A cron UTC-ben van.)
+    # 10 percenként indul (UTC).
     - cron: "*/10 * * * *"
 
 concurrency:
@@ -15,13 +15,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 12
     permissions:
-      contents: write   # <- kell a git commit/push-hoz a napi data/ perzisztálásnál
+      contents: write   # kell a git commit/push-hoz a napi data/ perzisztálásnál
 
     env:
       # --- Kötelező kulcsok (Secrets-ben tárolva) ---
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
 
-      # Tippek célcsatornája (bárki láthatja a csatornán): t.me/livemester → pl. -1002780259470
+      # Tippek célcsatornája: t.me/livemester → pl. -1002780259470
       TELEGRAM_CHAT_ID: "-1002780259470"
 
       # Admin privát chat ID – csak innen fogadjuk a /summary parancsot
@@ -89,6 +89,9 @@ jobs:
       ODDS_MODE: "shown"        # élő odds lekérés
       ODDS_BOOKMAKER: "bet365"  # preferált bukméker (opcionális)
       OVER_MIN_ODDS: "1.25"     # ez alatti Over árnál NEM küld jelzést
+
+      # --- /summary frissesség-ablak (mp) – csak friss parancs fusson ---
+      SUMMARY_CMD_WINDOW_SEC: "120"
 
     steps:
       - name: Checkout repository
