@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from datetime import datetime, time as dtime
 import pytz
 from math import tanh
+import re
 
 # --- EXTRA: summary import a kézi parancshoz ---
 try:
@@ -460,29 +461,92 @@ def select_top_fixtures(fixtures, limit):
     scored.sort(key=lambda t: t[0], reverse=True)
     return [fx for _, fx in scored[:limit]]
 
-# --- Cooldown, deduplikáció ---
+# --- Cooldown, deduplikáció (intra-run) + NAPI dedup kulcsok (inter-run) ---
 last_stats_fetch = {}
 last_signal_time = {}
 last_market_time = {}
-sent_hashes = set()
+sent_hashes = set()  # intra-run védelem (rövid cooldown + bucket-es ismétlődés)
+sent_keys_today = set()  # inter-run napi dedup kulcsok: (fixture_id, market, pick_bucket)
+
+def read_today_signal_count():
+    try:
+        path = f"data/{today_date_str()}/events.csv"
+        if not os.path.exists(path):
+            return 0
+        c = 0
+        with open(path, "r", encoding="utf-8") as f:
+            first = True
+            for line in f:
+                if first:
+                    first = False
+                    continue
+                if line.strip():
+                    c += 1
+        return c
+    except Exception:
+        return 0
+
+def pick_bucket_from_text(pick: str) -> str:
+    return re.sub(r"\s*\(live\)\s*$", "", (pick or "")).strip()
+
+def preload_sent_keys_today():
+    """
+    Betölti a már elküldött (fixture_id, market, pick_bucket) kulcsokat a napi data/DATE/events.csv-ből.
+    Így a mai napon nem küldjük ki még egyszer ugyanazt a meccs–piac–vonal kombinációt.
+    """
+    global sent_keys_today
+    date = today_date_str()
+    path = f"data/{date}/events.csv"
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            r = csv.DictReader(f)
+            for row in r:
+                fid = str(row.get("fixture_id","")).strip()
+                market = str(row.get("market","")).strip()
+                pb = pick_bucket_from_text(str(row.get("pick","")))
+                if fid and market and pb:
+                    sent_keys_today.add((fid, market, pb))
+    except Exception as e:
+        print(f"[{now_str()}] preload_sent_keys_today hiba: {e}")
 
 def can_fetch_stats(fid):
     last = last_stats_fetch.get(fid, 0)
     return (time.time() - last) >= STATS_COOLDOWN_MIN*60
 
-def allow_signal(fid, market, side_or_kind, minute):
+def allow_signal(fid, market, side_or_kind, minute, pick_bucket=None):
+    """
+    Két szintű védelem:
+    1) Intra-run cooldown + dedupe (korábbi logika)
+    2) Inter-run napi dedupe a (fid, market, pick_bucket) kulccsal
+    """
     now_t = time.time()
+
+    # 2) Napi dedup: ha már ma küldtük ugyanezt a meccs–piac–vonal kombinációt, NE küldjük újra
+    if pick_bucket:
+        day_key = (str(fid), str(market), str(pick_bucket))
+        if day_key in sent_keys_today:
+            return False
+
+    # 1) Korábbi cooldown/dedupe
     if (now_t - last_signal_time.get(fid, 0)) < SIGNAL_COOLDOWN_MIN*60:
         return False
     if (now_t - last_market_time.get((fid, market), 0)) < MARKET_COOLDOWN_MIN*60:
         return False
     bucket = int(minute // 5) * 5
-    h = (fid, market, side_or_kind, bucket)
+    h = (fid, market, (pick_bucket or side_or_kind), bucket)
     if h in sent_hashes:
         return False
+
+    # Ha átment minden szűrőn, engedélyezzük
     last_signal_time[fid] = now_t
     last_market_time[(fid, market)] = now_t
     sent_hashes.add(h)
+
+    # Tegyük hozzá a napi dedup halmazhoz is, hogy még ebben a futásban se menjen ki másodszor
+    if pick_bucket:
+        sent_keys_today.add(day_key)
     return True
 
 # --- Debug napló ---
@@ -517,24 +581,6 @@ def red_card_for_fixture(fid):
     flag = fetch_red_card_flag(fid)
     red_card_cache[fid] = flag
     return flag
-
-def read_today_signal_count():
-    try:
-        path = f"data/{today_date_str()}/events.csv"
-        if not os.path.exists(path):
-            return 0
-        c = 0
-        with open(path, "r", encoding="utf-8") as f:
-            first = True
-            for line in f:
-                if first:
-                    first = False
-                    continue
-                if line.strip():
-                    c += 1
-        return c
-    except Exception:
-        return 0
 
 def can_send_more_today(already_sent_local, cap):
     today_count = read_today_signal_count()
@@ -903,6 +949,9 @@ def format_signal_message(s, odds_line: str):
     )
 
 def main():
+    # 0) Napi, inter-run dedup kulcsok előtöltése
+    preload_sent_keys_today()
+
     # 1) /summary parancsok kezelése a futás elején (csak ADMIN, friss üzenet, max 1x)
     poll_and_handle_commands()
 
@@ -956,13 +1005,17 @@ def main():
             for s in merge_signals(fx, stats):
                 market = s["market"]
                 side_or_kind = s.get("side", market)
+
+                # Napi dedup kulcs azonos meccs–piac–vonalra
+                pick_bucket = pick_bucket_from_text(s.get("pick",""))
+
                 if not can_send_more_today(already_sent_local, MAX_SIGNALS_PER_DAY):
                     debug_row(phase="ALLOW", fixture_id=fid, minute=minute, reason="daily_cap_reached", metrics=f"MAX={MAX_SIGNALS_PER_DAY}")
                     continue
-                if allow_signal(fid, market, side_or_kind, minute):
+                if allow_signal(fid, market, side_or_kind, minute, pick_bucket=pick_bucket):
                     signals.append(s)
                 else:
-                    debug_row(phase="ALLOW", fixture_id=fid, minute=minute, reason="cooldown_dedupe_block", metrics=f"{market}/{side_or_kind}")
+                    debug_row(phase="ALLOW", fixture_id=fid, minute=minute, reason="cooldown_or_day_dedupe_block", metrics=f"{market}/{pick_bucket}")
 
         if signals:
             priority = {"LATE_GOAL":1, "NEXT_GOAL":2, "DNB":3, "OVER":4, "UNDER":5}
