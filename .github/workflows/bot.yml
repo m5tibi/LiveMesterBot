@@ -66,22 +66,26 @@ jobs:
           ENABLE_LATE_GOAL: "1"
           ENABLE_UNDER: "0"
 
-          # Küszöbök (v2.3 + xG opcionális a kódban)
+          # --- KÜSZÖBÖK (v2.3 alap + kért változás) ---
+          # NEXT_GOAL (xG opcionális)
           NG_DOM: "1.35"
           NG_SHOTS: "1.30"
           NG_XG: "1.25"
           NG_REQUIRE_XG: "0"
 
-          OVER_MINUTE_START: "40"
+          # OVER – csak 42' után és HT-ben tiltva
+          OVER_MINUTE_START: "42"
           OVER_XG_SUM: "1.20"
           OVER_SHOTS_SUM: "4"
           OVER_REQUIRE_XG: "0"
 
+          # DNB
           DNB_DOM: "1.45"
           DNB_SHOTS: "1.35"
           DNB_XG: "1.25"
           DNB_REQUIRE_XG: "0"
 
+          # LATE GOAL
           LATE_MINUTE_START: "68"
           LATE_XG_SUM: "1.60"
           LATE_SHOTS_SUM: "9"
@@ -91,6 +95,12 @@ jobs:
           # Anti-spam
           SIGNAL_COOLDOWN_MIN: "7"
           MARKET_COOLDOWN_MIN: "10"
+
+          # Piros lap szűrés
+          ENABLE_RED_CARD_FILTER: "1"     # 1 = OVER + NEXT_GOAL jelzések piros lapnál tiltva
+
+          # Napi felső jel-limit
+          MAX_SIGNALS_PER_DAY: "60"
 
           # DEBUG (csendben fájlba)
           DEBUG_LOG: "1"
@@ -117,24 +127,16 @@ jobs:
             exit 0
           fi
 
-          # Célkönyvtár létrehozása
           mkdir -p "$TARGET_DIR"
 
-          # Ha már létezik napi fájl, fűzzük (fejléc kihagyva); különben másoljuk
           if [ -f "$TARGET" ]; then
             echo "➕ Fűzés meglévő napi fájlhoz: $TARGET"
-            # Ha az SRC-nek van fejléce, ugorjuk az első sort
-            tail -n +2 "$SRC" >> "$TARGET" || {
-              echo "❗ tail >> sikertelen"; exit 0;
-            }
+            tail -n +2 "$SRC" >> "$TARGET" || { echo "❗ tail >> sikertelen"; exit 0; }
           else
             echo "🆕 Új napi fájl létrehozása: $TARGET"
-            cp "$SRC" "$TARGET" || {
-              echo "❗ cp sikertelen"; exit 0;
-            }
+            cp "$SRC" "$TARGET" || { echo "❗ cp sikertelen"; exit 0; }
           fi
 
-          # Biztonsági ellenőrzés – tényleg létrejött-e
           if [ ! -f "$TARGET" ]; then
             echo "❗ A célfájl nem létezik a másolás után sem, commit lépés kihagyva."
             ls -la logs || true
@@ -145,10 +147,8 @@ jobs:
           echo "✅ Napi fájl kész, commitolás..."
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-          git add "$TARGET" || { echo "❗ git add sikertelen, de nem hibáztatjuk a jobot."; exit 0; }
-          git commit -m "chore(data): append events $DATE [skip ci]" || {
-            echo "ℹ️ Nincs változás commitolni."; exit 0;
-          }
+          git add "$TARGET" || { echo "❗ git add sikertelen, de nem bukjuk a jobot."; exit 0; }
+          git commit -m "chore(data): append events $DATE [skip ci]" || { echo "ℹ️ Nincs változás."; exit 0; }
           git push || { echo "❗ git push sikertelen (pl. nincs változás / hálózat)."; exit 0; }
 
       - name: Finish
