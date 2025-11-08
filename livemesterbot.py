@@ -53,6 +53,9 @@ OVER_XG_SUM       = float(os.getenv("OVER_XG_SUM","1.20"))
 OVER_SHOTS_SUM    = int(os.getenv("OVER_SHOTS_SUM","4"))
 OVER_REQUIRE_XG   = os.getenv("OVER_REQUIRE_XG","0") == "1"
 
+# Késői OVER tiltás
+OVER_HARD_STOP    = int(os.getenv("OVER_HARD_STOP","88"))  # 88' felett nincs OVER-jel
+
 DNB_DOM   = float(os.getenv("DNB_DOM","1.45"))
 DNB_SHOTS = float(os.getenv("DNB_SHOTS","1.35"))
 DNB_XG    = float(os.getenv("DNB_XG","1.25"))
@@ -77,6 +80,9 @@ MAX_SIGNALS_PER_DAY = int(os.getenv("MAX_SIGNALS_PER_DAY","60"))
 ODDS_PROVIDER = os.getenv("ODDS_PROVIDER","api_football").strip().lower()  # api_football | none
 ODDS_MODE     = os.getenv("ODDS_MODE","none").strip().lower()              # none | shown
 ODDS_BOOKMAKER= (os.getenv("ODDS_BOOKMAKER","bet365") or "").strip().lower()
+
+# ÚJ: minimum élő oddsküszöb az OVER piacra (ha ODDS_MODE=shown és találtunk árat)
+OVER_MIN_ODDS = float(os.getenv("OVER_MIN_ODDS","0"))  # 0 → kikapcsolva; pl. 1.25
 
 # Debug
 DEBUG_LOG = os.getenv("DEBUG_LOG","1") == "1"
@@ -234,10 +240,6 @@ def fetch_live_odds_api_football(fixture_id: int):
         return None
 
 def pick_odds_for_market(odds_payload, market_kind: str, preferred_book: str, desired_over_label: str | None = None):
-    """
-    market_kind ∈ {"OVER","NEXT_GOAL","DNB","LATE_GOAL"}
-    desired_over_label: pl. "Over 2.5" – ha meg van adva, először erre próbál illeszteni.
-    """
     if not odds_payload:
         return None
 
@@ -248,7 +250,7 @@ def pick_odds_for_market(odds_payload, market_kind: str, preferred_book: str, de
         low = nm.lower()
         return any(tok in low for tok in targets)
 
-    # preferált bookmaker kiválasztása (ha van)
+    # preferált bookmaker
     books = []
     for item in odds_payload:
         for bk in (item.get("bookmakers") or []):
@@ -274,12 +276,10 @@ def pick_odds_for_market(odds_payload, market_kind: str, preferred_book: str, de
         for bet in bets:
             if match_market_name(bet.get("name",""), targets):
                 vals = bet.get("values") or []
-                # 1) próbáljuk a kívánt vonalat
                 for wl in wanted_lines:
                     for v in vals:
                         if (v.get("value") or "").lower() == wl.lower():
                             return (bname, wl, v.get("odd") or "")
-                # 2) ha nincs, bármely 'Over ...'
                 for v in vals:
                     if (v.get("value") or "").lower().startswith("over"):
                         return (bname, v.get("value") or "Over", v.get("odd") or "")
@@ -434,24 +434,57 @@ def can_send_more_today(already_sent_local, cap):
     return (today_count + already_sent_local) < cap
 
 # --- Dinamikus esélykalkulációk ---
-def prob_from_factors(*factors, base=0.5, amplify=0.35, low=0.52, high=0.88):
-    """
-    factors: 0..1 skálán értett rész-szignálok (pl. xg_norm, shots_norm, minute_norm, dom_norm, stb.)
-    base: alap valószínűség
-    amplify: mennyit engedünk rá a faktorokra összesen
-    """
+def prob_from_factors(*factors, base=0.5, amplify=0.28, low=0.53, high=0.82):
     s = sum(factors) / max(1, len(factors))
-    # lágy logisztika (tanh) – kisimítjuk a széleket
     boost = amplify * (0.5 * (tanh(2.0*(s-0.5)) + 1.0))  # 0..amplify
     return clamp(base + boost, low, high)
 
-def norm_ratio(val, thr):       # ~1: OK, 2+: nagyon erős
+def norm_ratio(val, thr):
     return clamp(val / max(1e-9, thr), 0.0, 2.0) / 2.0   # 0..1
 
-def minute_norm(minute, start=40, end=90):
-    return clamp((minute - start) / max(1, end - start), 0.0, 1.0)
+def minute_norm_descending(minute, start=40, end=95):
+    """Minél később jár az óra, annál KISEBB érték (kevesebb idő marad)."""
+    rem = clamp(end - minute, 0, end - start)
+    return rem / max(1, (end - start))
 
-# --- Jelgenerálás (xG opcionális) ---
+# --- Over-vonal kezelések ---
+def label_to_threshold(label: str) -> float:
+    try:
+        return float(label.strip().split()[-1])
+    except:
+        return 9.99
+
+def next_over_label_above(goals: int) -> str:
+    target = goals + 0.5
+    lines = [0.5,1.5,2.5,3.5,4.5,5.5]
+    for ln in lines:
+        if ln >= target:
+            return f"Over {ln}"
+    return f"Over {target:.1f}"
+
+def choose_over_label(minute, total_goals, xg_sum, shots_sum):
+    pressure = 0.6*norm_ratio(xg_sum, OVER_XG_SUM) + 0.4*norm_ratio(shots_sum, OVER_SHOTS_SUM)
+    if minute < 56:
+        if total_goals >= 3: lbl = "Over 3.5"
+        elif total_goals == 2: lbl = "Over 2.5"
+        elif total_goals == 1: lbl = "Over 2.5" if pressure >= 0.5 else "Over 1.5"
+        else: lbl = "Over 1.5" if pressure >= 0.6 else "Over 0.5"
+    elif minute < 76:
+        if total_goals >= 3: lbl = "Over 3.5" if pressure >= 0.5 else "Over 2.5"
+        elif total_goals == 2: lbl = "Over 2.5" if pressure >= 0.5 else "Over 1.5"
+        elif total_goals == 1: lbl = "Over 1.5" if pressure >= 0.4 else "Over 0.5"
+        else: lbl = "Over 1.5" if pressure >= 0.8 else "Over 0.5"
+    else:
+        if total_goals >= 3: lbl = "Over 3.5" if pressure >= 0.7 else "Over 2.5"
+        elif total_goals == 2: lbl = "Over 2.5" if pressure >= 0.6 else "Over 1.5"
+        elif total_goals == 1: lbl = "Over 1.5" if pressure >= 0.5 else "Over 0.5"
+        else: lbl = "Over 1.5" if pressure >= 0.85 else "Over 0.5"
+
+    if label_to_threshold(lbl) <= total_goals:
+        lbl = next_over_label_above(total_goals)
+    return lbl
+
+# --- Jelgenerálás ---
 def gen_next_goal(fx, stats):
     if not ENABLE_NEXT_GOAL: return []
     fixture = fx.get("fixture", {})
@@ -490,13 +523,10 @@ def gen_next_goal(fx, stats):
 
     out=[]
     if (xg_ok or not NG_REQUIRE_XG):
-        picked = None
         if cond_home:
             side, pick = "home","Következő gól – Hazai"
-            picked = "home"
         elif cond_away:
             side, pick = "away","Következő gól – Vendég"
-            picked = "away"
         else:
             debug_row(phase="NGA", fixture_id=fid, minute=minute,
                       league=f"{league.get('country','')} {league.get('name','')}",
@@ -504,12 +534,11 @@ def gen_next_goal(fx, stats):
                       reason="threshold_fail",
                       metrics=f"dom={dom:.2f}, shots={shots:.2f}, xgr={('n/a' if xgr is None else f'{xgr:.2f}')}")
             return []
-        # dinamikus valószínűség
         f_dom   = clamp((dom-1)/0.6, 0.0, 1.0)
         f_shots = clamp((shots-1)/0.6, 0.0, 1.0)
         f_xg    = clamp(((xgr or 1.0)-1)/0.5, 0.0, 1.0) if xgr is not None else 0.5
-        f_min   = minute_norm(minute, 20, 90)
-        prob = prob_from_factors(f_dom, f_shots, f_xg, f_min, base=0.55, amplify=0.3, low=0.55, high=0.9)
+        f_min   = minute_norm_descending(minute, 20, 95)
+        prob = prob_from_factors(f_dom, f_shots, f_xg, f_min, base=0.54, amplify=0.28, low=0.54, high=0.86)
 
         out.append({
             "market":"NEXT_GOAL","league":f"{league.get('country','')} {league.get('name','')}",
@@ -526,31 +555,6 @@ def gen_next_goal(fx, stats):
                   metrics=f"dom={dom:.2f}, shots={shots:.2f}")
     return out
 
-def choose_over_label(minute, total_goals, xg_sum, shots_sum):
-    """
-    Válasszunk élő over-vonalat a játékállapothoz:
-    - korai 2. félidő (42–55): inkább Over 2.5 (ha 0–1 gól), 3.5 (ha már 3 gól)
-    - közép (56–75): 2.5 vagy 1.5, a nyomástól függően
-    - késő (76–90): 1.5 vagy 0.5
-    A nyomás (pressure) skála: xg és lövés összevetve a küszöbbel.
-    """
-    pressure = 0.6*norm_ratio(xg_sum, OVER_XG_SUM) + 0.4*norm_ratio(shots_sum, OVER_SHOTS_SUM)  # 0..1
-    if minute < 56:
-        if total_goals >= 3: return "Over 3.5"
-        if total_goals == 2: return "Over 2.5"
-        if total_goals == 1: return "Over 2.5" if pressure >= 0.5 else "Over 1.5"
-        return "Over 1.5" if pressure >= 0.6 else "Over 0.5"
-    if minute < 76:
-        if total_goals >= 3: return "Over 3.5" if pressure >= 0.5 else "Over 2.5"
-        if total_goals == 2: return "Over 2.5" if pressure >= 0.5 else "Over 1.5"
-        if total_goals == 1: return "Over 1.5" if pressure >= 0.4 else "Over 0.5"
-        return "Over 1.5" if pressure >= 0.8 else "Over 0.5"
-    # 76'+
-    if total_goals >= 3: return "Over 3.5" if pressure >= 0.7 else "Over 2.5"
-    if total_goals == 2: return "Over 2.5" if pressure >= 0.6 else "Over 1.5"
-    if total_goals == 1: return "Over 1.5" if pressure >= 0.5 else "Over 0.5"
-    return "Over 1.5" if pressure >= 0.85 else "Over 0.5"
-
 def gen_over(fx, stats):
     if not ENABLE_OVER: return []
     fixture = fx.get("fixture", {})
@@ -560,7 +564,20 @@ def gen_over(fx, stats):
     status_short = fixture.get("status",{}).get("short")
     minute  = fixture.get("status",{}).get("elapsed",0) or 0
 
+    # tiltások
     if status_short == "HT" or minute < OVER_MINUTE_START:
+        return []
+    if minute >= OVER_HARD_STOP:
+        return []  # 88' után már nem ajánlunk OVER-t
+
+    home = teams.get("home",{}).get("name","Home")
+    away = teams.get("away",{}).get("name","Away")
+    hg = goals.get("home",0) or 0
+    ag = goals.get("away",0) or 0
+    total_goals = hg + ag
+
+    # külön GÁTLÓ: 0–0 és nagyon késő (≥85') → ne küldjünk OVER-t
+    if total_goals == 0 and minute >= 85:
         return []
 
     fid = fixture.get("id")
@@ -570,12 +587,6 @@ def gen_over(fx, stats):
                   match=f"{teams.get('home',{}).get('name','Home')} – {teams.get('away',{}).get('name','Away')}",
                   reason="red_card_block", metrics="")
         return []
-
-    home = teams.get("home",{}).get("name","Home")
-    away = teams.get("away",{}).get("name","Away")
-    hg = goals.get("home",0) or 0
-    ag = goals.get("away",0) or 0
-    total_goals = hg + ag
 
     hxg = extract_stat(stats, home, "Expected Goals")
     axg = extract_stat(stats, away, "Expected Goals")
@@ -589,15 +600,15 @@ def gen_over(fx, stats):
 
     cond_xg = (xg_sum >= OVER_XG_SUM) if (hxg is not None and axg is not None) else True if not OVER_REQUIRE_XG else False
     if cond_xg and shots_sum >= OVER_SHOTS_SUM:
-        # Dinamikus over-vonal választás
         over_label = choose_over_label(minute, total_goals, xg_sum, shots_sum)
+        if label_to_threshold(over_label) <= total_goals:
+            over_label = next_over_label_above(total_goals)
 
-        # Dinamikus esélyszámítás
-        f_xg    = norm_ratio(xg_sum, OVER_XG_SUM)      # 0..1
+        f_xg    = norm_ratio(xg_sum, OVER_XG_SUM)
         f_shots = norm_ratio(shots_sum, OVER_SHOTS_SUM)
-        f_min   = minute_norm(minute, 40, 90)
-        f_goals = clamp(total_goals/3.0, 0.0, 1.0)     # több gól -> nagyobb sansz egy újabbra
-        prob = prob_from_factors(f_xg, f_shots, f_min, f_goals, base=0.56, amplify=0.28, low=0.56, high=0.87)
+        f_time  = minute_norm_descending(minute, 40, 95)
+        f_goals = clamp(total_goals/3.0, 0.0, 1.0)
+        prob = prob_from_factors(f_xg, f_shots, f_time, f_goals, base=0.53, amplify=0.27, low=0.53, high=0.82)
 
         return [{
             "market":"OVER",
@@ -610,7 +621,7 @@ def gen_over(fx, stats):
             "odds":None,
             "fixture_id":fid,
             "side":"over",
-            "desired_label": over_label,  # az odds-kereső ezt fogja preferálni
+            "desired_label": over_label,
             "details":{"xg_sum":(None if hxg is None or axg is None else round(xg_sum,2)), "shots_sum":shots_sum}
         }]
     else:
@@ -653,14 +664,13 @@ def gen_dnb(fx, stats):
     if cond_home or cond_away:
         side = "home" if cond_home else "away"
         pick = "Hazai DNB" if cond_home else "Vendég DNB"
-        # Dinamikus esély: dominancia, lövés, (xg), perc + hátrány mértéke
-        goal_def = abs(hg - ag)
         f_dom   = clamp(( (dom if side=="home" else 1/dom) -1)/0.6, 0.0, 1.0)
         f_shots = clamp(( (shots if side=="home" else 1/shots) -1)/0.6, 0.0, 1.0)
         f_xg    = clamp((( (xgr if side=="home" else (1/(xgr or 1.0))) )-1)/0.5, 0.0, 1.0) if xgr is not None else 0.5
-        f_min   = minute_norm(minute, 35, 90)
+        f_min   = minute_norm_descending(minute, 35, 95)
+        goal_def = abs(hg - ag)
         f_def   = clamp(goal_def/2.0, 0.0, 1.0)
-        prob = prob_from_factors(f_dom, f_shots, f_xg, f_min, f_def, base=0.56, amplify=0.26, low=0.56, high=0.86)
+        prob = prob_from_factors(f_dom, f_shots, f_xg, f_min, f_def, base=0.54, amplify=0.26, low=0.54, high=0.84)
 
         out.append({
             "market":"DNB","league":f"{league.get('country','')} {league.get('name','')}",
@@ -675,7 +685,7 @@ def gen_dnb(fx, stats):
                   match=f"{home} – {away}",
                   reason="threshold_fail",
                   metrics=f"dom={dom:.2f}, shots={shots:.2f}, xgr={('n/a' if xgr is None else f'{xgr:.2f}')}")
-    return out
+    return []
 
 def gen_late_goal(fx, stats):
     if not ENABLE_LATE_GOAL: return []
@@ -715,12 +725,11 @@ def gen_late_goal(fx, stats):
         else:
             side = "over"; pick = "Over 0.5 (Late)"
 
-        # Dinamikus esély
         f_xg    = norm_ratio(xg_sum, LATE_XG_SUM)
         f_shots = norm_ratio(shots_sum, LATE_SHOTS_SUM)
         f_da    = norm_ratio(da_run, LATE_DA_RUN)
-        f_min   = minute_norm(minute, 68, 95)
-        prob = prob_from_factors(f_xg, f_shots, f_da, f_min, base=0.60, amplify=0.28, low=0.60, high=0.90)
+        f_min   = minute_norm_descending(minute, 68, 100)
+        prob = prob_from_factors(f_xg, f_shots, f_da, f_min, base=0.58, amplify=0.28, low=0.58, high=0.88)
 
         return [{
             "market":"LATE_GOAL",
@@ -741,7 +750,7 @@ def gen_late_goal(fx, stats):
                   league=f"{league.get('country','')} {league.get('name','')}",
                   match=f"{home} – {away}",
                   reason="threshold_fail",
-                  metrics=f"xg_sum={('n/a' if hxg is None or axg is None else f'{xg_sum:.2f}')}, shots_sum={shots_sum}, da_run={da_run}")
+                  metrics=f"xg_sum={('n/a' if hxg is None else f'{xg_sum:.2f}')}, shots_sum={shots_sum}, da_run={da_run}")
     return []
 
 def merge_signals(fx, stats):
@@ -853,6 +862,7 @@ def main():
                     continue
 
                 odds_line = ""
+                # --- ODDS alapú szűrés (csak ha kérted és találtunk árat) ---
                 if ODDS_MODE == "shown" and ODDS_PROVIDER == "api_football":
                     odds_payload = fetch_live_odds_api_football(s["fixture_id"])
                     mk = "OVER" if s["market"] in ("OVER","UNDER","LATE_GOAL") else s["market"]
@@ -860,6 +870,13 @@ def main():
                     picked = pick_odds_for_market(odds_payload, mk, ODDS_BOOKMAKER, desired_over_label=desired)
                     if picked:
                         bname, label, price = picked
+                        # Ha OVER_MIN_ODDS be van állítva és az ár túl alacsony → ne küldjük
+                        try:
+                            if s["market"] == "OVER" and OVER_MIN_ODDS > 0 and price and float(price) < OVER_MIN_ODDS:
+                                debug_row(phase="SEND", fixture_id=s["fixture_id"], minute=s["minute"], reason="over_min_odds_block", metrics=f"price={price} < {OVER_MIN_ODDS}")
+                                continue
+                        except Exception:
+                            pass
                         if price:
                             odds_line = f"\n💰 <b>Odds</b>: {price} ({bname} – {label})"
 
