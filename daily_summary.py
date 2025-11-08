@@ -1,7 +1,12 @@
+# daily_summary.py
 import os
 import csv
+import re
+import time
 import requests
 from datetime import datetime
+from collections import Counter, defaultdict
+
 import pytz
 from dotenv import load_dotenv
 
@@ -11,239 +16,259 @@ TIMEZONE = os.getenv("TIMEZONE", "Europe/Budapest")
 tz = pytz.timezone(TIMEZONE)
 
 TELEGRAM_BOT_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
-TELEGRAM_CHAT_ID   = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
+# Alapértelmezett cél: csatorna; /summary esetén a livemesterbot.py ideiglenesen beállít _TMP_SUMMARY_CHAT-et
+TELEGRAM_CHAT_ID   = (os.getenv("_TMP_SUMMARY_CHAT") or os.getenv("TELEGRAM_CHAT_ID") or "").strip()
 
 RAPIDAPI_KEY  = (os.getenv("RAPIDAPI_KEY") or "").strip()
 RAPIDAPI_HOST = (os.getenv("RAPIDAPI_HOST") or "api-football-v1.p.rapidapi.com").strip()
 
 BASE_URL = "https://api-football-v1.p.rapidapi.com/v3"
+HEADERS  = {"x-rapidapi-key": RAPIDAPI_KEY, "x-rapidapi-host": RAPIDAPI_HOST}
 
-def today_str():
+def now_str():
+    return datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
+
+def today_date_str():
     return datetime.now(tz).strftime("%Y-%m-%d")
+
+def read_events_for_date(datestr: str):
+    """
+    Betölti a napi events.csv-t:
+      1) data/YYYY-MM-DD/events.csv  (ha van)
+      2) különben logs/events.csv    (fallback)
+    Visszaad: list[dict]
+    """
+    candidates = [
+        f"data/{datestr}/events.csv",
+        "logs/events.csv",
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            rows = []
+            with open(path, "r", encoding="utf-8") as f:
+                r = csv.DictReader(f)
+                for row in r:
+                    rows.append(row)
+            return rows, path
+    return [], None
+
+def pick_to_bucket(pick: str) -> str:
+    """
+    "Over 2.5 (live)" -> "Over 2.5"
+    """
+    if not pick:
+        return ""
+    return re.sub(r"\s*\(live\)\s*$", "", pick).strip()
+
+def dedup_events(rows):
+    """
+    Dedup kulcs: (fixture_id, market, pick_bucket), az első előfordulást meghagyjuk időrendben.
+    """
+    # idő szerint rendezés (ha van 'time' mező)
+    def parse_time(s):
+        try:
+            return datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return datetime.min
+    rows_sorted = sorted(rows, key=lambda r: parse_time(r.get("time","")))
+    seen = set()
+    out = []
+    for r in rows_sorted:
+        key = (str(r.get("fixture_id","")).strip(),
+               str(r.get("market","")).strip(),
+               pick_to_bucket(str(r.get("pick",""))))
+        if key in seen:
+            continue
+        seen.add(key)
+        r["pick_bucket"] = key[2]
+        out.append(r)
+    return out
+
+def fetch_fixture_final(fixture_id: str, retry=3, sleep_sec=1.5):
+    """
+    Lekéri a meccs végállapotát az API-Footballtól.
+    Visszaad: dict { 'status': 'FT/NS/...' , 'home': int, 'away': int }
+    Ha nincs adat, None.
+    """
+    if not RAPIDAPI_KEY:
+        return None
+    url = f"{BASE_URL}/fixtures"
+    params = {"id": fixture_id}
+    for i in range(retry):
+        try:
+            r = requests.get(url, headers=HEADERS, params=params, timeout=15)
+            if r.status_code == 429:
+                time.sleep(min(10, sleep_sec * (2 ** i)))
+                continue
+            if r.status_code != 200:
+                return None
+            resp = r.json().get("response", [])
+            if not resp:
+                return None
+            fx = resp[0]
+            status = (fx.get("fixture",{}).get("status",{}).get("short") or "").upper()
+            g = fx.get("goals", {}) or {}
+            home = int(g.get("home") or 0)
+            away = int(g.get("away") or 0)
+            return {"status": status, "home": home, "away": away}
+        except Exception:
+            time.sleep(min(10, sleep_sec * (2 ** i)))
+    return None
+
+OVER_RE = re.compile(r"^over\s+(\d+(?:\.\d+)?)$", re.IGNORECASE)
+
+def eval_over(outcome_info, pick_bucket: str):
+    """
+    Kimenet (win/loss/pending):
+      - pending: ha nem FT/AET/PEN vége
+      - win/loss: total_goals vs. N.5
+    """
+    m = OVER_RE.match(pick_bucket or "")
+    if not m:
+        return "unsupported"
+    line = float(m.group(1))
+    if not outcome_info:
+        return "pending"
+    status = (outcome_info.get("status") or "").upper()
+    if status not in ("FT","AET","PEN","ABD","AWD","WO"):
+        return "pending"
+    total = (outcome_info.get("home",0) or 0) + (outcome_info.get("away",0) or 0)
+    return "win" if total > line else "loss"
+
+def evaluate_rows(rows):
+    """
+    rows: deduplikált jelzések
+    Vissza: (stats, evaluated_rows)
+      stats: összesítések
+      evaluated_rows: sorok outcome mezővel
+    """
+    # Csoportosítsunk fixture szerint, hogy ne hívjuk többször az API-t
+    by_fixture = defaultdict(list)
+    for r in rows:
+        by_fixture[str(r.get("fixture_id","")).strip()].append(r)
+
+    fixture_outcomes = {}
+    for fid in by_fixture.keys():
+        if not fid or fid.lower() == "none":
+            fixture_outcomes[fid] = None
+            continue
+        fixture_outcomes[fid] = fetch_fixture_final(fid)
+
+    evaluated = []
+    for r in rows:
+        market = (r.get("market") or "").upper()
+        pick_b = r.get("pick_bucket") or pick_to_bucket(r.get("pick") or "")
+        outcome = "pending"
+        if market == "OVER":
+            outcome = eval_over(fixture_outcomes.get(str(r.get("fixture_id","")).strip()), pick_b)
+        elif market in ("NEXT_GOAL","DNB","LATE_GOAL","UNDER"):
+            # Itt most nem implementálunk részletes értékelést -> pending/unsupported
+            outcome = "pending"
+        else:
+            outcome = "pending"
+        r2 = dict(r)
+        r2["outcome"] = outcome
+        evaluated.append(r2)
+
+    # Összesítések
+    total = len(evaluated)
+    cnt = Counter([r["outcome"] for r in evaluated])
+    won   = cnt.get("win", 0)
+    lost  = cnt.get("loss", 0)
+    void  = cnt.get("void", 0)  # jelenleg nincs void logika
+    pend  = cnt.get("pending", 0)
+    # Sikerarány (void/pending nélkül)
+    denom = won + lost
+    success_rate = (won / denom * 100.0) if denom > 0 else 0.0
+
+    # Top piacok, top ligák
+    markets = Counter([(r.get("market") or "").upper() for r in evaluated])
+    leagues = Counter([(r.get("league") or "") for r in evaluated])
+
+    def top_k(counter, k=3):
+        return [(name, counter[name]) for name in sorted(counter, key=lambda x: (-counter[x], x))[:k]]
+
+    stats = {
+        "total": total,
+        "win": won,
+        "loss": lost,
+        "void": void,
+        "pending": pend,
+        "success_rate": round(success_rate, 1),
+        "top_markets": top_k(markets, 3),
+        "top_leagues": top_k(leagues, 3),
+    }
+    return stats, evaluated
+
+def format_summary_message(date_str: str, stats: dict):
+    def fmt_top(items):
+        if not items:
+            return "—"
+        return ", ".join([f"{name} ({cnt})" for name, cnt in items])
+
+    text = (
+        f"🧾 <b>Napi összesítő – {date_str}</b>\n"
+        f"Összes tipp: {stats['total']}\n"
+        f"✅ Nyertes: {stats['win']}\n"
+        f"❌ Vesztett: {stats['loss']}\n"
+        f"↔️ Void: {stats['void']}\n"
+        f"⏳ Függő: {stats['pending']}\n\n"
+        f"Top piacok: {fmt_top(stats['top_markets'])}\n"
+        f"Top ligák: {fmt_top(stats['top_leagues'])}\n"
+        f"Sikerarány (void/pending nélkül): {stats['success_rate']}%\n"
+    )
+    return text
 
 def send_telegram(text: str):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Telegram token/chat_id hiányzik – kihagyva.")
-        return
+        print(f"[{now_str()}] Telegram token/chat hiányzik → nem küldtem el.")
+        return False
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True
+    }
     try:
-        r = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=20)
+        r = requests.post(url, json=payload, timeout=20)
         if r.status_code != 200:
-            print("Telegram hiba:", r.status_code, r.text)
+            print(f"[{now_str()}] Telegram hiba: {r.status_code} {r.text}")
+            return False
+        return True
     except Exception as e:
-        print("Telegram kivétel:", e)
-
-def rapid_headers():
-    return {"x-rapidapi-key": RAPIDAPI_KEY, "x-rapidapi-host": RAPIDAPI_HOST}
-
-def fetch_fixture(fid: int):
-    try:
-        r = requests.get(f"{BASE_URL}/fixtures", headers=rapid_headers(), params={"id": fid}, timeout=25)
-        if r.status_code != 200: return None
-        resp = r.json().get("response", [])
-        return resp[0] if resp else None
-    except Exception:
-        return None
-
-def fetch_events(fid: int):
-    try:
-        r = requests.get(f"{BASE_URL}/fixtures/events", headers=rapid_headers(), params={"fixture": fid}, timeout=25)
-        if r.status_code != 200: return []
-        return r.json().get("response", [])
-    except Exception:
-        return []
-
-def parse_over_threshold(pick: str):
-    # "Over 2.5 (live)" → 2.5
-    try:
-        for tok in pick.split():
-            try:
-                return float(tok)
-            except:
-                continue
-    except:
-        pass
-    return None
-
-def first_goal_after_minute(events, minute: int):
-    # visszaadja az első gól eseményt a perc után: {"team_side":"home"/"away"} vagy None
-    for ev in events:
-        if ev.get("type") == "Goal":
-            tname = (ev.get("team", {}) or {}).get("name", "")
-            # perc lehet "67'", "90'+2" stb.
-            mt = ev.get("time", {}) or {}
-            elapsed = mt.get("elapsed") or 0
-            extra = mt.get("extra") or 0
-            eff_min = (elapsed or 0) + (extra or 0)
-            if eff_min > minute:
-                # oldal meghatározása a "home"/"away" a tname alapján nem triviális,
-                # viszont az API event elemében van "team.id" → összevetjük a fixture csapat-id-kkal, ha megvannak
-                return ev
-    return None
-
-def team_side_from_event(ev, fixture):
-    team_id = ((ev or {}).get("team") or {}).get("id")
-    if not team_id or not fixture: return None
-    home_id = ((fixture.get("teams") or {}).get("home") or {}).get("id")
-    away_id = ((fixture.get("teams") or {}).get("away") or {}).get("id")
-    if team_id == home_id: return "home"
-    if team_id == away_id: return "away"
-    return None
-
-def evaluate_row(row, cache):
-    """
-    Visszaad: ("win"|"loss"|"void"|"pending", info_str)
-    """
-    market = (row.get("market") or "").upper()
-    pick   = (row.get("pick") or "")
-    fid    = row.get("fixture_id")
-    minute = 0
-    try:
-        minute = int(row.get("minute") or "0")
-    except:
-        minute = 0
-
-    if not fid:
-        return ("pending", "missing_fixture_id")
-
-    try:
-        fid = int(fid)
-    except:
-        return ("pending", "bad_fixture_id")
-
-    # cache: kevesebb API hívás
-    if fid not in cache:
-        fx = fetch_fixture(fid)
-        evs = fetch_events(fid)
-        cache[fid] = {"fixture": fx, "events": evs}
-    else:
-        data = cache[fid]
-        fx, evs = data.get("fixture"), data.get("events")
-
-    data = cache[fid]
-    fx = data.get("fixture")
-    evs = data.get("events", [])
-
-    if not fx:
-        return ("pending", "fixture_not_found")
-
-    status = (((fx.get("fixture") or {}).get("status") or {}).get("short") or "")
-    goals  = fx.get("goals") or {}
-    ft_home = goals.get("home", 0) or 0
-    ft_away = goals.get("away", 0) or 0
-    total  = ft_home + ft_away
-
-    # OVER
-    if market == "OVER":
-        thr = parse_over_threshold(pick)
-        if thr is None:
-            return ("pending", "no_threshold")
-        if status in ("FT","AET","PEN"):
-            return ("win", f"{total}>{thr}") if total > thr else ("loss", f"{total}<={thr}")
-        else:
-            return ("pending", "not_finished")
-
-    # DNB
-    if market == "DNB":
-        # "Hazai DNB" / "Vendég DNB" → home/away side
-        side = "home" if "Hazai" in pick else ("away" if "Vendég" in pick else None)
-        if side is None:
-            return ("pending", "dnb_side_unknown")
-        if status in ("FT","AET","PEN"):
-            if ft_home == ft_away:
-                return ("void", "draw")
-            winner = "home" if ft_home > ft_away else "away"
-            return ("win", winner) if winner == side else ("loss", winner)
-        else:
-            return ("pending", "not_finished")
-
-    # NEXT_GOAL  és LATE_GOAL (Next típus)
-    if market in ("NEXT_GOAL", "LATE_GOAL"):
-        if "Következő gól" in pick:
-            side = "home" if "Hazai" in pick else ("away" if "Vendég" in pick else None)
-            if side is None:
-                return ("pending", "next_side_unknown")
-            # első gól a perc után:
-            ev = first_goal_after_minute(evs, minute)
-            if not ev:
-                # ha nem esett több gól, akkor bukta
-                if status in ("FT","AET","PEN"):
-                    return ("loss", "no_later_goal")
-                return ("pending", "no_later_goal_yet")
-            scored_side = team_side_from_event(ev, fx)
-            if scored_side is None:
-                return ("pending", "cant_map_team")
-            return ("win", scored_side) if scored_side == side else ("loss", scored_side)
-        else:
-            # LATE_GOAL Over 0.5 (Late) — legalább 1 gól még a jelzés után
-            if "Over 0.5" in pick:
-                ev = first_goal_after_minute(evs, minute)
-                if not ev:
-                    if status in ("FT","AET","PEN"):
-                        return ("loss", "no_later_goal")
-                    return ("pending", "no_later_goal_yet")
-                return ("win", "late_over_hit")
-            # egyéb speciális minták
-            return ("pending", "unknown_late_pattern")
-
-    # UNDER-t most nem értékeljük külön (nálad kikapcsolt)
-    return ("pending", "unknown_market")
+        print(f"[{now_str()}] Telegram kivétel: {e}")
+        return False
 
 def main():
-    day = today_str()
-    data_path = os.path.join("data", day, "events.csv")
+    # Melyik napot értékeljük? Alapértelmezetten MA (BUD időzóna)
+    date_str = os.getenv("SUMMARY_DATE") or today_date_str()
 
-    rows = []
-    if os.path.exists(data_path):
-        with open(data_path, "r", encoding="utf-8") as f:
-            r = csv.DictReader(f)
-            rows = list(r)
-    else:
-        # fallback: ha valamiért nem perzisztált a napi fájl
-        if os.path.exists("logs/events.csv"):
-            with open("logs/events.csv","r",encoding="utf-8") as f:
-                r = csv.DictReader(f)
-                rows = list(r)
-
+    rows, src = read_events_for_date(date_str)
     if not rows:
-        send_telegram(f"🧾 Napi összesítő – {day}\nMa nem keletkezett napló (nincs data).")
+        send_telegram(f"🧾 <b>Napi összesítő – {date_str}</b>\nMa nem keletkezett napló (nincs data).")
         return
 
-    cache = {}
-    totals = {"all":0,"win":0,"loss":0,"void":0,"pending":0}
-    by_market = {}
-    by_league = {}
+    # DEDUP
+    rows_dedup = dedup_events(rows)
 
-    for row in rows:
-        totals["all"] += 1
-        league = row.get("league","").strip()
-        market = (row.get("market","") or "").upper()
-        by_market[market] = by_market.get(market, 0) + 1
-        by_league[league] = by_league.get(league, 0) + 1
+    # Kiértékelés (OVER piacra tényleges W/L, többire jelenleg pending)
+    stats, evaluated = evaluate_rows(rows_dedup)
 
-        outcome, _info = evaluate_row(row, cache)
-        totals[outcome] = totals.get(outcome, 0) + 1
+    # Üzenet
+    msg = format_summary_message(date_str, stats)
 
-    played = totals["win"] + totals["loss"]  # void/pending nélkül
-    success = (totals["win"] / played * 100.0) if played > 0 else 0.0
-
-    # top piacok/ligák (3-3)
-    def topn(d, n=3):
-        return ", ".join([f"{k} ({v})" for k,v in sorted(d.items(), key=lambda x: x[1], reverse=True)[:n]])
-
-    msg = (
-        f"🧾 <b>Napi összesítő</b> – {day}\n"
-        f"Összes tipp: <b>{totals['all']}</b>\n"
-        f"✅ Nyertes: <b>{totals['win']}</b>\n"
-        f"❌ Vesztett: <b>{totals['loss']}</b>\n"
-        f"↔️ Void: <b>{totals['void']}</b>\n"
-        f"⏳ Függő: <b>{totals['pending']}</b>\n"
-        f"\nTop piacok: {topn(by_market)}\n"
-        f"Top ligák: {topn(by_league)}\n"
-        f"Sikerarány (void/pending nélkül): <b>{success:.1f}%</b>"
-    )
-
+    # Küldés
     send_telegram(msg)
+
+    # (Opcionális) debug log
+    try:
+        os.makedirs("logs", exist_ok=True)
+        with open("logs/summary_debug.txt", "a", encoding="utf-8") as f:
+            f.write(f"[{now_str()}] date={date_str} src={src}\n")
+            f.write(f"raw={len(rows)} dedup={len(rows_dedup)} stats={stats}\n\n")
+    except Exception:
+        pass
 
 if __name__ == "__main__":
     main()
