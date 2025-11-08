@@ -5,10 +5,10 @@ concurrency:
   group: livemesterbot
   cancel-in-progress: true
 
-# 05:00–23:00 Europe/Budapest → UTC-ben 04–22
+# 05:00–23:00 Europe/Budapest → téli időben UTC 04–22
 on:
   schedule:
-    - cron: "*/15 4-22 * * *"   # 15 percenként 05:00–23:00 CET (UTC+1 => 04–22 UTC)
+    - cron: "*/15 4-22 * * *"
   workflow_dispatch:
 
 jobs:
@@ -27,7 +27,8 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run LiveMesterBot (10-min session; cron restarts)
+      - name: Run LiveMesterBot (9-min session; cron restarts)
+        timeout-minutes: 11
         run: python livemesterbot.py
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -36,55 +37,53 @@ jobs:
           RAPIDAPI_HOST: api-football-v1.p.rapidapi.com
 
           # Időzítés és kérés-keret (≈ ≤5000/nap)
-          POLL_SECONDS: "150"             # 2.5 perc
+          POLL_SECONDS: "150"
           ACTIVE_HOURS_START: "05:00"
           ACTIVE_HOURS_END: "23:00"
           PEAK_HOURS_START: "18:00"
           PEAK_HOURS_END: "22:00"
-          PEAK_POLL_SECONDS: "120"        # csúcsban 2 perc
+          PEAK_POLL_SECONDS: "120"
 
-          # Ciklusonként ennyi meccsre kérünk statot
+          # Ciklusonként statolt meccsek
           MAX_FIXTURES_PER_CYCLE: "12"
           PEAK_MAX_FIXTURES_PER_CYCLE: "16"
 
-          # Ugyanarra a meccsre min. ennyi perc két statlekérés között
+          # Ugyanarra a meccsre stat cooldown (perc)
           STATS_COOLDOWN_MIN: "5"
 
           TIMEZONE: Europe/Budapest
 
           # Futási modell
-          RUN_MINUTES: "10"               # 10 perc futás / job
+          RUN_MINUTES: "9"                # 9 perc futás / job (puffer a 15 perces cronhoz)
           MUTE_NO_SIGNAL: "1"             # ne küldjön 'nincs jel' üzeneteket
-          SEND_ONLINE_ON_START: "0"       # 🔕 induláskor NE küldjön 'online' üzenetet
+          SEND_ONLINE_ON_START: "0"       # induláskor ne küldjön 'online' üzenetet
+          BACKOFF_MAX_SEC: "60"           # 429 esetén max 60s backoff (ne nyúljon túl)
 
-          # Piacok engedélyezése
+          # Piacok
           ENABLE_NEXT_GOAL: "1"
           ENABLE_OVER: "1"
           ENABLE_DNB: "1"
           ENABLE_LATE_GOAL: "1"
-          ENABLE_UNDER: "0"               # később bekapcsolható
+          ENABLE_UNDER: "0"
 
-          # Küszöbök (finomhangolhatók)
-          NG_DOM: "1.6"
-          NG_SHOTS: "1.5"
-          NG_XG: "1.4"
-
+          # Küszöbök
+          NG_DOM: "1.5"
+          NG_SHOTS: "1.4"
+          NG_XG: "1.3"
           OVER_MINUTE_START: "45"
-          OVER_XG_SUM: "1.6"
-          OVER_SHOTS_SUM: "6"
-
-          DNB_DOM: "1.6"
-          DNB_SHOTS: "1.5"
-          DNB_XG: "1.4"
-
+          OVER_XG_SUM: "1.4"
+          OVER_SHOTS_SUM: "5"
+          DNB_DOM: "1.5"
+          DNB_SHOTS: "1.4"
+          DNB_XG: "1.3"
           LATE_MINUTE_START: "70"
-          LATE_XG_SUM: "2.0"
-          LATE_SHOTS_SUM: "12"
-          LATE_DA_RUN: "15"               # utolsó ~10 percben veszélyes támadás-run
+          LATE_XG_SUM: "1.8"
+          LATE_SHOTS_SUM: "10"
+          LATE_DA_RUN: "12"
 
-          # Jel-anti-spam
-          SIGNAL_COOLDOWN_MIN: "7"        # ugyanarra a meccsre min. 7 perc két jel között
-          MARKET_COOLDOWN_MIN: "10"       # ugyanarra a piacra min. 10 perc
+          # Anti-spam
+          SIGNAL_COOLDOWN_MIN: "7"
+          MARKET_COOLDOWN_MIN: "10"
 
       # Napló commitálása (ha keletkezett jel)
       - name: Commit logs to repo (data/YYYY-MM-DD/events.csv)
@@ -105,7 +104,7 @@ jobs:
             git add "$TARGET"
             git commit -m "chore(data): append events $DATE [skip ci]" || echo "No changes"
             git push
-          else:
+          else
             echo "No local logs/events.csv produced in this run."
           fi
 
