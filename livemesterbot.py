@@ -789,8 +789,7 @@ def format_signal_message(s, odds_line: str):
         f"⚡ <b>{s['market'].replace('_',' ')} ALERT</b>\n"
         f"🏟️ <b>Meccs</b>: {s['match']} ({s['score']}, {s['minute']}' )\n"
         f"🏆 <b>Liga</b>: {s['league']}\n"
-        f"🎯 <b>Tipp</b>: {s['pick']}\n"
-        f"📈 <b>Esély</b>: {s['prob']}%{odds_line}\n"
+        f"🎯 <b>Tipp</b>: {s['pick']}{odds_line}\n"
     )
 
 def main():
