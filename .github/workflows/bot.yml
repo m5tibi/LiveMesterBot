@@ -1,11 +1,9 @@
 name: LiveMesterBot (batch)
 
-# Egyszerre csak 1 fusson, a következő sorban áll (nem lövi le a futót)
 concurrency:
   group: livemesterbot
   cancel-in-progress: false
 
-# 05:00–23:00 Europe/Budapest → téli időben UTC 04–22
 on:
   schedule:
     - cron: "*/15 4-22 * * *"
@@ -36,7 +34,7 @@ jobs:
           RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
           RAPIDAPI_HOST: api-football-v1.p.rapidapi.com
 
-          # Időzítés & kérés-keret (≈ ≤5000/nap)
+          # Időzítés & kérés-keret
           POLL_SECONDS: "150"
           ACTIVE_HOURS_START: "05:00"
           ACTIVE_HOURS_END: "23:00"
@@ -44,112 +42,84 @@ jobs:
           PEAK_HOURS_END: "22:00"
           PEAK_POLL_SECONDS: "120"
 
-          # Ciklusonként statolt meccsek
           MAX_FIXTURES_PER_CYCLE: "12"
           PEAK_MAX_FIXTURES_PER_CYCLE: "16"
-
-          # Ugyanarra a meccsre stat cooldown (perc)
           STATS_COOLDOWN_MIN: "5"
-
           TIMEZONE: Europe/Budapest
 
-          # Futási modell
           RUN_MINUTES: "8"
           MUTE_NO_SIGNAL: "1"
           SEND_ONLINE_ON_START: "0"
           BACKOFF_MAX_SEC: "60"
 
-          # Piacok
           ENABLE_NEXT_GOAL: "1"
           ENABLE_OVER: "1"
           ENABLE_DNB: "1"
           ENABLE_LATE_GOAL: "1"
           ENABLE_UNDER: "0"
 
-          # --- KÜSZÖBÖK (v2.3 alap + kért változás) ---
-          # NEXT_GOAL (xG opcionális)
+          # Küszöbök (v2.3 + kért finomítások)
           NG_DOM: "1.35"
           NG_SHOTS: "1.30"
           NG_XG: "1.25"
           NG_REQUIRE_XG: "0"
 
-          # OVER – csak 42' után és HT-ben tiltva
-          OVER_MINUTE_START: "42"
+          OVER_MINUTE_START: "42"   # csak 42' után
           OVER_XG_SUM: "1.20"
           OVER_SHOTS_SUM: "4"
           OVER_REQUIRE_XG: "0"
 
-          # DNB
           DNB_DOM: "1.45"
           DNB_SHOTS: "1.35"
           DNB_XG: "1.25"
           DNB_REQUIRE_XG: "0"
 
-          # LATE GOAL
           LATE_MINUTE_START: "68"
           LATE_XG_SUM: "1.60"
           LATE_SHOTS_SUM: "9"
           LATE_DA_RUN: "10"
           LATE_REQUIRE_XG: "0"
 
-          # Anti-spam
           SIGNAL_COOLDOWN_MIN: "7"
           MARKET_COOLDOWN_MIN: "10"
 
-          # Piros lap szűrés
-          ENABLE_RED_CARD_FILTER: "1"     # 1 = OVER + NEXT_GOAL jelzések piros lapnál tiltva
-
-          # Napi felső jel-limit
+          ENABLE_RED_CARD_FILTER: "1"
           MAX_SIGNALS_PER_DAY: "60"
 
-          # DEBUG (csendben fájlba)
           DEBUG_LOG: "1"
 
-      # Napló commitálása (HA és CSAK HA van új events.csv)
+          # ÚJ: odds megjelenítés módja (none|estimated)
+          ODDS_MODE: "none"
+
       - name: Commit logs to repo (data/YYYY-MM-DD/events.csv)
         if: always()
         shell: bash
         run: |
           set -euo pipefail
-
           DATE=$(TZ=Europe/Budapest date +%F)
           SRC="logs/events.csv"
           TARGET_DIR="data/$DATE"
           TARGET="$TARGET_DIR/events.csv"
-
           echo "📄 Commit step – DATE=$DATE"
-          echo "SRC=$SRC"
-          echo "TARGET=$TARGET"
-
-          # Ha nincs helyi log, nincs mit commitolni
           if [ ! -s "$SRC" ]; then
             echo "ℹ️ Nincs helyi $SRC (nem keletkezett tipp ebben a futásban)."
             exit 0
           fi
-
           mkdir -p "$TARGET_DIR"
-
           if [ -f "$TARGET" ]; then
-            echo "➕ Fűzés meglévő napi fájlhoz: $TARGET"
             tail -n +2 "$SRC" >> "$TARGET" || { echo "❗ tail >> sikertelen"; exit 0; }
           else
-            echo "🆕 Új napi fájl létrehozása: $TARGET"
             cp "$SRC" "$TARGET" || { echo "❗ cp sikertelen"; exit 0; }
           fi
-
           if [ ! -f "$TARGET" ]; then
-            echo "❗ A célfájl nem létezik a másolás után sem, commit lépés kihagyva."
-            ls -la logs || true
-            ls -la "$TARGET_DIR" || true
+            echo "❗ A célfájl nem jött létre, commit kihagyva."
             exit 0
           fi
-
-          echo "✅ Napi fájl kész, commitolás..."
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-          git add "$TARGET" || { echo "❗ git add sikertelen, de nem bukjuk a jobot."; exit 0; }
+          git add "$TARGET" || { echo "❗ git add sikertelen"; exit 0; }
           git commit -m "chore(data): append events $DATE [skip ci]" || { echo "ℹ️ Nincs változás."; exit 0; }
-          git push || { echo "❗ git push sikertelen (pl. nincs változás / hálózat)."; exit 0; }
+          git push || { echo "❗ git push sikertelen."; exit 0; }
 
       - name: Finish
         run: echo "✅ LiveMesterBot workflow complete."
