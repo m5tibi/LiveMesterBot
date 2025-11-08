@@ -16,7 +16,7 @@ TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID","").strip()
 RAPIDAPI_KEY  = os.getenv("RAPIDAPI_KEY","").strip()
 RAPIDAPI_HOST = os.getenv("RAPIDAPI_HOST","api-football-v1.p.rapidapi.com").strip()
 
-POLL_SECONDS = int(os.getenv("POLL_SECONDS","150"))           # 2.5 perc
+POLL_SECONDS = int(os.getenv("POLL_SECONDS","150"))
 ACTIVE_HOURS_START = os.getenv("ACTIVE_HOURS_START","05:00")
 ACTIVE_HOURS_END   = os.getenv("ACTIVE_HOURS_END","23:00")
 PEAK_HOURS_START   = os.getenv("PEAK_HOURS_START","18:00")
@@ -31,9 +31,8 @@ STATS_COOLDOWN_MIN = int(os.getenv("STATS_COOLDOWN_MIN","5"))
 TIMEZONE = os.getenv("TIMEZONE","Europe/Budapest")
 MUTE_NO_SIGNAL = os.getenv("MUTE_NO_SIGNAL", "1") == "1"
 SEND_ONLINE_ON_START = os.getenv("SEND_ONLINE_ON_START", "0") == "1"
-RUN_MINUTES = int(os.getenv("RUN_MINUTES", "9"))
+RUN_MINUTES = int(os.getenv("RUN_MINUTES", "8"))  # ← alapból 8 perc
 
-# új: backoff plafon, hogy ne nyúljon túl a session-ön
 BACKOFF_MAX_SEC = int(os.getenv("BACKOFF_MAX_SEC", "60"))
 
 # --- Piacok engedélyezése ---
@@ -70,7 +69,7 @@ LOG_DIR = "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
 LOG_FILE = os.path.join(LOG_DIR, "events.csv")
 
-# --- kíméletes leállítás jelzése ---
+# --- kíméletes leállítás ---
 stop_flag = False
 def _handle_term(sig, frm):
     global stop_flag
@@ -120,9 +119,7 @@ def _rapidapi_headers():
     return {"x-rapidapi-key": RAPIDAPI_KEY, "x-rapidapi-host": RAPIDAPI_HOST}
 
 def backoff_sleep(i):
-    # plafonozott backoff, hogy beleférjen a sessionbe
-    sleep_s = min(BACKOFF_MAX_SEC, 2 ** min(i,6))
-    time.sleep(sleep_s)
+    time.sleep(min(BACKOFF_MAX_SEC, 2 ** min(i,6)))
 
 def fetch_live_fixtures():
     if not RAPIDAPI_KEY:
@@ -534,7 +531,6 @@ def main():
         if RUN_MINUTES > 0 and (time.time() - start_time) >= RUN_MINUTES * 60:
             break
 
-        # rövidebb sleep, ha hamarosan stop jelet kaptunk
         for _ in range(int(max(1, poll))):
             if stop_flag:
                 break
