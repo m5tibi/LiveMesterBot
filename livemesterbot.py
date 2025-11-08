@@ -19,7 +19,10 @@ load_dotenv()
 
 # --- ENV (általános) ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN","").strip()
-TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID","").strip()  # cél chat/csatorna ID (pl. -100...)
+# Tippek ide mennek (csatorna)
+TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID","").strip()
+# /summary csak innen fogadott (admin privát chat ID)
+TELEGRAM_ADMIN_CHAT_ID = os.getenv("TELEGRAM_ADMIN_CHAT_ID","").strip()
 
 RAPIDAPI_KEY  = os.getenv("RAPIDAPI_KEY","").strip()
 RAPIDAPI_HOST = os.getenv("RAPIDAPI_HOST","api-football-v1.p.rapidapi.com").strip()
@@ -134,11 +137,12 @@ def clamp(v, lo, hi):
     return max(lo, min(hi, v))
 
 def send_message(text: str, chat_id: str | None = None):
-    """Alapból a TELEGRAM_CHAT_ID-re küld, de felülírható."""
-    if not TELEGRAM_BOT_TOKEN or not (chat_id or TELEGRAM_CHAT_ID):
+    """Alapból a csatornára küld (TELEGRAM_CHAT_ID), de felülírható."""
+    target_default = TELEGRAM_CHAT_ID
+    if not TELEGRAM_BOT_TOKEN or not (chat_id or target_default):
         print(f"[{now_str()}] ERROR: Telegram token/chat_id hiányzik.")
         return False
-    to = chat_id or TELEGRAM_CHAT_ID
+    to = chat_id or target_default
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": to, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
     try:
@@ -169,7 +173,7 @@ def _write_update_offset(val: int):
         pass
 
 def poll_and_handle_commands():
-    """Egy rövid polling a futás elején: feldolgozza a /summary parancsokat."""
+    """Rövid polling a futás elején: /summary csak az ADMIN-tól."""
     if not TELEGRAM_BOT_TOKEN:
         return
     base = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
@@ -196,8 +200,8 @@ def poll_and_handle_commands():
             if not text or not chat_id:
                 continue
 
-            # csak a megadott csatornáról/felületről fogadjunk parancsot
-            if TELEGRAM_CHAT_ID and chat_id != TELEGRAM_CHAT_ID:
+            # Parancsokat csak az ADMIN privát chatjéből fogadunk
+            if not TELEGRAM_ADMIN_CHAT_ID or chat_id != TELEGRAM_ADMIN_CHAT_ID:
                 continue
 
             if text.lower() == "/summary":
@@ -205,10 +209,18 @@ def poll_and_handle_commands():
                     send_message("⚠️ A /summary funkció nincs telepítve (daily_summary.py hiányzik).", chat_id)
                 else:
                     send_message("📊 Napi összegzés indítása...", chat_id)
+                    # ideiglenes chat override: a summary neked válaszoljon
+                    old_override = os.getenv("_TMP_SUMMARY_CHAT")
+                    os.environ["_TMP_SUMMARY_CHAT"] = chat_id
                     try:
                         run_daily_summary()
                     except Exception as e:
                         send_message(f"⚠️ Hiba a summary futtatás közben: {e}", chat_id)
+                    finally:
+                        if old_override is not None:
+                            os.environ["_TMP_SUMMARY_CHAT"] = old_override
+                        else:
+                            os.environ.pop("_TMP_SUMMARY_CHAT", None)
 
         if max_update_id > offset:
             _write_update_offset(max_update_id)
@@ -676,7 +688,7 @@ def gen_over(fx, stats):
         if label_to_threshold(over_label) <= total_goals:
             over_label = next_over_label_above(total_goals)
 
-        # Dinamikus (belső) esély – időfaktor csökkenő, de NEM írjuk ki
+        # Dinamikus (belső) esély – NEM írjuk ki
         f_xg    = norm_ratio(xg_sum, OVER_XG_SUM)
         f_shots = norm_ratio(shots_sum, OVER_SHOTS_SUM)
         f_time  = minute_norm_descending(minute, 40, 95)
@@ -867,7 +879,7 @@ def format_signal_message(s, odds_line: str):
     )
 
 def main():
-    # 1) Parancsok (pl. /summary) feldolgozása a futás elején
+    # 1) /summary parancsok kezelése a futás elején (csak ADMIN)
     poll_and_handle_commands()
 
     if SEND_ONLINE_ON_START:
@@ -957,7 +969,7 @@ def main():
                             odds_line = f"\n💰 <b>Odds</b>: {price} ({bname} – {label})"
 
                 msg = format_signal_message(s, odds_line)
-                send_message(msg)
+                send_message(msg)          # ← csatornára megy
                 log_event(s)
                 already_sent_local += 1
         else:
