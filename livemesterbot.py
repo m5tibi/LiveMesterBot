@@ -47,7 +47,7 @@ NG_SHOTS = float(os.getenv("NG_SHOTS","1.30"))
 NG_XG    = float(os.getenv("NG_XG","1.25"))
 NG_REQUIRE_XG = os.getenv("NG_REQUIRE_XG","0") == "1"
 
-OVER_MINUTE_START = int(os.getenv("OVER_MINUTE_START","42"))  # kért: 42'
+OVER_MINUTE_START = int(os.getenv("OVER_MINUTE_START","42"))  # csak 42' után
 OVER_XG_SUM       = float(os.getenv("OVER_XG_SUM","1.20"))
 OVER_SHOTS_SUM    = int(os.getenv("OVER_SHOTS_SUM","4"))
 OVER_REQUIRE_XG   = os.getenv("OVER_REQUIRE_XG","0") == "1"
@@ -71,6 +71,11 @@ ENABLE_RED_CARD_FILTER = os.getenv("ENABLE_RED_CARD_FILTER","1") == "1"
 
 # Napi jel-limit
 MAX_SIGNALS_PER_DAY = int(os.getenv("MAX_SIGNALS_PER_DAY","60"))
+
+# Odds megjelenítés módja: none | estimated
+ODDS_MODE = os.getenv("ODDS_MODE","none").strip().lower()
+if ODDS_MODE not in ("none","estimated"):
+    ODDS_MODE = "none"
 
 # Debug
 DEBUG_LOG = os.getenv("DEBUG_LOG","1") == "1"
@@ -180,7 +185,6 @@ def fetch_statistics(fixture_id: int):
             return None
 
 def fetch_red_card_flag(fixture_id: int):
-    """Visszaadja, hogy esett-e piros lap (True/False)."""
     if not RAPIDAPI_KEY:
         return False
     url = f"{BASE_URL}/fixtures/events"
@@ -300,8 +304,6 @@ def ratio(a, b): return (a + 1e-9) / (b + 1e-9)
 
 # --- RED CARD cache, napi limit számláló ---
 red_card_cache = {}  # fixture_id -> bool
-local_signal_count = 0
-
 def red_card_for_fixture(fid):
     if not ENABLE_RED_CARD_FILTER:
         return False
@@ -318,12 +320,10 @@ def read_today_signal_count():
             return 0
         c = 0
         with open(path, "r", encoding="utf-8") as f:
-            # fejléccel együtt – az első sort ne számoljuk, ha header van
             first = True
             for line in f:
                 if first:
                     first = False
-                    # ha a header sor, akkor ne növelj
                     continue
                 if line.strip():
                     c += 1
@@ -331,9 +331,9 @@ def read_today_signal_count():
     except Exception:
         return 0
 
-def can_send_more_today(already_sent_local):
+def can_send_more_today(already_sent_local, cap):
     today_count = read_today_signal_count()
-    return (today_count + already_sent_local) < MAX_SIGNALS_PER_DAY
+    return (today_count + already_sent_local) < cap
 
 # --- Jelgenerálás (xG opcionális) ---
 def gen_next_goal(fx, stats):
@@ -342,10 +342,9 @@ def gen_next_goal(fx, stats):
     teams   = fx.get("teams", {})
     goals   = fx.get("goals", {})
     league  = fx.get("league", {})
-    status_short = fixture.get("status",{}).get("short")
     minute  = fixture.get("status",{}).get("elapsed",0) or 0
+    fid     = fixture.get("id")
 
-    fid = fixture.get("id")
     if ENABLE_RED_CARD_FILTER and red_card_for_fixture(fid):
         debug_row(phase="NGA", fixture_id=fid, minute=minute,
                   league=f"{league.get('country','')} {league.get('name','')}",
@@ -413,7 +412,6 @@ def gen_over(fx, stats):
     status_short = fixture.get("status",{}).get("short")
     minute  = fixture.get("status",{}).get("elapsed",0) or 0
 
-    # HT tiltás + 42' előtti tiltás
     if status_short == "HT" or minute < OVER_MINUTE_START:
         return []
 
@@ -459,7 +457,6 @@ def gen_over(fx, stats):
     return []
 
 def gen_dnb(fx, stats):
-    # DNB-re nem kértél piros lap tiltást, így marad változatlan
     if not ENABLE_DNB: return []
     fixture = fx.get("fixture", {})
     teams   = fx.get("teams", {})
@@ -655,7 +652,7 @@ def main():
             for s in merge_signals(fx, stats):
                 market = s["market"]
                 side_or_kind = s.get("side", market)
-                if not can_send_more_today(already_sent_local):
+                if not can_send_more_today(already_sent_local, MAX_SIGNALS_PER_DAY):
                     debug_row(phase="ALLOW", fixture_id=fid, minute=minute, reason="daily_cap_reached", metrics=f"MAX={MAX_SIGNALS_PER_DAY}")
                     continue
                 if allow_signal(fid, market, side_or_kind, minute):
@@ -667,16 +664,19 @@ def main():
             priority = {"LATE_GOAL":1, "NEXT_GOAL":2, "DNB":3, "OVER":4, "UNDER":5}
             signals.sort(key=lambda x: (priority.get(x["market"], 9), -x["prob"]))
             for s in signals:
-                if not can_send_more_today(already_sent_local):
+                if not can_send_more_today(already_sent_local, MAX_SIGNALS_PER_DAY):
                     debug_row(phase="SEND", fixture_id=s["fixture_id"], minute=s["minute"], reason="daily_cap_reached", metrics=f"MAX={MAX_SIGNALS_PER_DAY}")
                     continue
+                # --- Üzenet összeállítás (ODDS_MODE-ot figyelembe véve) ---
+                odds_line = ""
+                if ODDS_MODE == "estimated" and ("odds" in s) and (s["odds"] is not None):
+                    odds_line = f"\n💰 <b>Odds</b>: {s['odds']}"
                 msg = (
                     f"⚡ <b>{s['market'].replace('_',' ')} ALERT</b>\n"
                     f"🏟️ <b>Meccs</b>: {s['match']} ({s['score']}, {s['minute']}' )\n"
                     f"🏆 <b>Liga</b>: {s['league']}\n"
                     f"🎯 <b>Tipp</b>: {s['pick']}\n"
-                    f"📈 <b>Esély</b>: {s['prob']}%\n"
-                    f"💰 <b>Odds</b>: {s['odds']}\n"
+                    f"📈 <b>Esély</b>: {s['prob']}%{odds_line}\n"
                 )
                 send_message(msg)
                 log_event(s)
