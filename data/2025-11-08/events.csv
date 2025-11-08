@@ -18,3 +18,14 @@ time,league,match,minute,score,pick,prob,odds,fixture_id,details,market
 2025-11-08 21:51:05,Germany 2. Bundesliga,1. FC Kaiserslautern – Hertha BSC,61,0:1,Over 1.5 (live),66.2,,1388718,"{'xg_sum': None, 'shots_sum': 12.0}",OVER
 2025-11-08 21:51:06,England Premier League,Chelsea – Wolves,45,0:0,Over 0.5 (live),64.2,,1379071,"{'xg_sum': None, 'shots_sum': 6.0}",OVER
 2025-11-08 21:51:07,Switzerland Super League,Servette FC – FC Thun,63,0:0,Over 0.5 (live),63.7,,1382368,"{'xg_sum': None, 'shots_sum': 15.0}",OVER
+2025-11-08 22:18:00,Argentina Liga Profesional Argentina,Huracan – Newells Old Boys,58,0:2,Over 2.5 (live),68.8,,1374276,"{'xg_sum': None, 'shots_sum': 11.0}",OVER
+2025-11-08 22:18:01,Argentina Liga Profesional Argentina,Racing Club – Defensa Y Justicia,58,1:0,Over 1.5 (live),66.5,,1374277,"{'xg_sum': None, 'shots_sum': 17.0}",OVER
+2025-11-08 22:18:02,Netherlands Eredivisie,PEC Zwolle – Sparta Rotterdam,60,1:0,Over 1.5 (live),66.3,,1380970,"{'xg_sum': None, 'shots_sum': 13.0}",OVER
+2025-11-08 22:18:02,Spain La Liga,Espanyol – Villarreal,58,0:2,Over 2.5 (live),66.3,,1390933,"{'xg_sum': None, 'shots_sum': 5.0}",OVER
+2025-11-08 22:18:03,England Premier League,Chelsea – Wolves,56,1:0,Over 1.5 (live),65.9,,1379071,"{'xg_sum': None, 'shots_sum': 7.0}",OVER
+2025-11-08 22:28:16,Peru Primera División,Juan Pablo II College – Atletico Grau,48,2:0,Over 2.5 (live),68.3,,1484076,"{'xg_sum': None, 'shots_sum': 6.0}",OVER
+2025-11-08 22:28:16,England Premier League,Chelsea – Wolves,67,2:0,Over 2.5 (live),67.7,,1379071,"{'xg_sum': None, 'shots_sum': 9.0}",OVER
+2025-11-08 22:28:17,Argentina Liga Profesional Argentina,Huracan – Newells Old Boys,69,0:2,Over 2.5 (live),67.4,,1374276,"{'xg_sum': None, 'shots_sum': 12.0}",OVER
+2025-11-08 22:28:18,Spain La Liga,Espanyol – Villarreal,70,0:2,Over 2.5 (live),65.6,,1390933,"{'xg_sum': None, 'shots_sum': 6.0}",OVER
+2025-11-08 22:28:19,Argentina Liga Profesional Argentina,Racing Club – Defensa Y Justicia,69,1:0,Over 1.5 (live),65.2,,1374277,"{'xg_sum': None, 'shots_sum': 18.0}",OVER
+2025-11-08 22:28:23,Netherlands Eredivisie,PEC Zwolle – Sparta Rotterdam,71,1:0,Over 1.5 (live),65.0,,1380970,"{'xg_sum': None, 'shots_sum': 13.0}",OVER
