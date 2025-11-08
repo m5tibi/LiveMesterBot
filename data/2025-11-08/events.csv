@@ -37,3 +37,5 @@ time,league,match,minute,score,pick,prob,odds,fixture_id,details,market
 2025-11-08 22:41:20,Chile Primera División,Palestino – Coquimbo Unido,49,0:0,Over 0.5 (live),62.2,,1339219,"{'xg_sum': None, 'shots_sum': 4.0}",OVER
 2025-11-08 22:51:27,Portugal Primeira Liga,Santa Clara – Sporting CP,63,1:1,Over 2.5 (live),68.2,,1396334,"{'xg_sum': None, 'shots_sum': 11.0}",OVER
 2025-11-08 22:51:28,Chile Primera División,Palestino – Coquimbo Unido,59,0:0,Over 0.5 (live),61.1,,1339219,"{'xg_sum': None, 'shots_sum': 4.0}",OVER
+2025-11-08 22:56:43,Portugal Primeira Liga,Santa Clara – Sporting CP,68,1:1,Over 2.5 (live),67.6,,1396334,"{'xg_sum': None, 'shots_sum': 11.0}",OVER
+2025-11-08 22:56:44,Chile Primera División,Palestino – Coquimbo Unido,65,0:0,Over 0.5 (live),60.5,,1339219,"{'xg_sum': None, 'shots_sum': 4.0}",OVER
