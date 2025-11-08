@@ -6,3 +6,11 @@ time,league,match,minute,score,pick,prob,odds,fixture_id,details,market
 2025-11-08 21:02:39,Poland Ekstraklasa,GKS Katowice – Piast Gliwice,45,0:2,Over 2.5 (live),67.0,,1380511,"{'xg_sum': None, 'shots_sum': 4.0}",OVER
 2025-11-08 21:04:42,Brazil Serie A,Sport Recife – Atletico-MG,46,1:0,Over 1.5 (live),65.5,,1351372,"{'xg_sum': None, 'shots_sum': 5.0}",OVER
 2025-11-08 21:04:43,Netherlands Eredivisie,Fortuna Sittard – Heerenveen,47,0:0,Over 0.5 (live),64.8,,1380969,"{'xg_sum': None, 'shots_sum': 7.0}",OVER
+2025-11-08 21:39:07,Germany 2. Bundesliga,1. FC Kaiserslautern – Hertha BSC,49,0:1,Over 1.5 (live),67.6,,1388718,"{'xg_sum': None, 'shots_sum': 9.0}",OVER
+2025-11-08 21:39:08,Poland Ekstraklasa,GKS Katowice – Piast Gliwice,58,0:2,Over 2.5 (live),67.1,,1380511,"{'xg_sum': None, 'shots_sum': 6.0}",OVER
+2025-11-08 21:39:09,Netherlands Eredivisie,Fortuna Sittard – Heerenveen,81,2:0,Over 2.5 (live),66.0,,1380969,"{'xg_sum': None, 'shots_sum': 19.0}",OVER
+2025-11-08 21:39:09,Switzerland Super League,Servette FC – FC Thun,51,0:0,Over 0.5 (live),65.2,,1382368,"{'xg_sum': None, 'shots_sum': 13.0}",OVER
+2025-11-08 21:45:17,Argentina Liga Profesional Argentina,Huracan – Newells Old Boys,45,0:2,Over 2.5 (live),69.5,,1374276,"{'xg_sum': None, 'shots_sum': 7.0}",OVER
+2025-11-08 21:45:17,Argentina Liga Profesional Argentina,Racing Club – Defensa Y Justicia,45,1:0,Over 1.5 (live),68.1,,1374277,"{'xg_sum': None, 'shots_sum': 13.0}",OVER
+2025-11-08 21:45:18,Netherlands Eredivisie,PEC Zwolle – Sparta Rotterdam,45,1:0,Over 1.5 (live),68.1,,1380970,"{'xg_sum': None, 'shots_sum': 10.0}",OVER
+2025-11-08 21:45:19,England Premier League,Chelsea – Wolves,44,0:0,Over 0.5 (live),63.5,,1379071,"{'xg_sum': None, 'shots_sum': 5.0}",OVER
