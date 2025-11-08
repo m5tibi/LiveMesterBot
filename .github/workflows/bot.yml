@@ -1,6 +1,6 @@
 name: LiveMesterBot (batch)
 
-# Egyszerre csak 1 fusson, de NE szakítsuk meg a futót (sorban áll a következő)
+# Egyszerre csak 1 fusson, a következő sorban áll (nem lövi le a futót)
 concurrency:
   group: livemesterbot
   cancel-in-progress: false
@@ -28,7 +28,6 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run LiveMesterBot (8-min session; cron restarts)
-        # Adunk bő timeoutot: a Python lépés elférjen, és a commit-step is lefuthasson
         timeout-minutes: 12
         run: python livemesterbot.py
         env:
@@ -37,7 +36,7 @@ jobs:
           RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
           RAPIDAPI_HOST: api-football-v1.p.rapidapi.com
 
-          # Időzítés és kérés-keret (≈ ≤5000/nap)
+          # Időzítés & kérés-keret (≈ ≤5000/nap)
           POLL_SECONDS: "150"
           ACTIVE_HOURS_START: "05:00"
           ACTIVE_HOURS_END: "23:00"
@@ -55,10 +54,10 @@ jobs:
           TIMEZONE: Europe/Budapest
 
           # Futási modell
-          RUN_MINUTES: "8"                # 8 perc aktív futás (bő puffer a 15 perces ütemhez)
-          MUTE_NO_SIGNAL: "1"             # ne küldjön 'nincs jel' üzenetet
-          SEND_ONLINE_ON_START: "0"       # induláskor ne küldjön 'online' üzenetet
-          BACKOFF_MAX_SEC: "60"           # 429 esetén max 60s backoff
+          RUN_MINUTES: "8"
+          MUTE_NO_SIGNAL: "1"
+          SEND_ONLINE_ON_START: "0"
+          BACKOFF_MAX_SEC: "60"
 
           # Piacok
           ENABLE_NEXT_GOAL: "1"
@@ -67,24 +66,38 @@ jobs:
           ENABLE_LATE_GOAL: "1"
           ENABLE_UNDER: "0"
 
-          # Küszöbök (érzékeny)
-          NG_DOM: "1.5"
-          NG_SHOTS: "1.4"
-          NG_XG: "1.3"
-          OVER_MINUTE_START: "45"
-          OVER_XG_SUM: "1.4"
-          OVER_SHOTS_SUM: "5"
-          DNB_DOM: "1.5"
-          DNB_SHOTS: "1.4"
-          DNB_XG: "1.3"
-          LATE_MINUTE_START: "70"
-          LATE_XG_SUM: "1.8"
-          LATE_SHOTS_SUM: "10"
-          LATE_DA_RUN: "12"
+          # --- KÜSZÖBÖK (v2.3: még érzékenyebb, xG opcionális) ---
+          # Next Goal
+          NG_DOM: "1.35"
+          NG_SHOTS: "1.30"
+          NG_XG: "1.25"             # ha xG nincs, a kód figyelmen kívül hagyja
+          NG_REQUIRE_XG: "0"        # 0 = xG NEM kötelező
+
+          # Over (élő)
+          OVER_MINUTE_START: "40"   # 45 -> 40
+          OVER_XG_SUM: "1.20"       # 1.4 -> 1.2 (ha van xG)
+          OVER_SHOTS_SUM: "4"       # 5 -> 4
+          OVER_REQUIRE_XG: "0"
+
+          # DNB
+          DNB_DOM: "1.45"
+          DNB_SHOTS: "1.35"
+          DNB_XG: "1.25"
+          DNB_REQUIRE_XG: "0"
+
+          # Late Goal
+          LATE_MINUTE_START: "68"   # 70 -> 68
+          LATE_XG_SUM: "1.60"
+          LATE_SHOTS_SUM: "9"
+          LATE_DA_RUN: "10"
+          LATE_REQUIRE_XG: "0"
 
           # Anti-spam
           SIGNAL_COOLDOWN_MIN: "7"
           MARKET_COOLDOWN_MIN: "10"
+
+          # DEBUG (csendben fájlba)
+          DEBUG_LOG: "1"            # 1 = ír debug CSV-t logs/debug.csv-be
 
       # Napló commitálása (ha keletkezett jel)
       - name: Commit logs to repo (data/YYYY-MM-DD/events.csv)
@@ -97,7 +110,7 @@ jobs:
           if [ -f logs/events.csv ]; then
             if [ -f "$TARGET" ]; then
               tail -n +2 logs/events.csv >> "$TARGET"
-            else
+            else:
               cp logs/events.csv "$TARGET"
             fi
             git config user.name "github-actions"
