@@ -1,6 +1,7 @@
 import os
 import time
 import csv
+import signal
 import requests
 from dotenv import load_dotenv
 from datetime import datetime, time as dtime
@@ -28,10 +29,12 @@ PEAK_MAX_FIXTURES_PER_CYCLE = int(os.getenv("PEAK_MAX_FIXTURES_PER_CYCLE","16"))
 STATS_COOLDOWN_MIN = int(os.getenv("STATS_COOLDOWN_MIN","5"))
 
 TIMEZONE = os.getenv("TIMEZONE","Europe/Budapest")
-
 MUTE_NO_SIGNAL = os.getenv("MUTE_NO_SIGNAL", "1") == "1"
 SEND_ONLINE_ON_START = os.getenv("SEND_ONLINE_ON_START", "0") == "1"
-RUN_MINUTES = int(os.getenv("RUN_MINUTES", "10"))
+RUN_MINUTES = int(os.getenv("RUN_MINUTES", "9"))
+
+# új: backoff plafon, hogy ne nyúljon túl a session-ön
+BACKOFF_MAX_SEC = int(os.getenv("BACKOFF_MAX_SEC", "60"))
 
 # --- Piacok engedélyezése ---
 ENABLE_NEXT_GOAL = os.getenv("ENABLE_NEXT_GOAL","1") == "1"
@@ -40,25 +43,24 @@ ENABLE_DNB       = os.getenv("ENABLE_DNB","1") == "1"
 ENABLE_LATE_GOAL = os.getenv("ENABLE_LATE_GOAL","1") == "1"
 ENABLE_UNDER     = os.getenv("ENABLE_UNDER","0") == "1"
 
-# --- Küszöbök (ÉRZÉKENYEBBRE VÉVE) ---
-NG_DOM   = float(os.getenv("NG_DOM","1.5"))   # 1.6 -> 1.5
-NG_SHOTS = float(os.getenv("NG_SHOTS","1.4")) # 1.5 -> 1.4
-NG_XG    = float(os.getenv("NG_XG","1.3"))    # 1.4 -> 1.3
+# --- Küszöbök (érzékeny) ---
+NG_DOM   = float(os.getenv("NG_DOM","1.5"))
+NG_SHOTS = float(os.getenv("NG_SHOTS","1.4"))
+NG_XG    = float(os.getenv("NG_XG","1.3"))
 
 OVER_MINUTE_START = int(os.getenv("OVER_MINUTE_START","45"))
-OVER_XG_SUM       = float(os.getenv("OVER_XG_SUM","1.4"))  # 1.6 -> 1.4
-OVER_SHOTS_SUM    = int(os.getenv("OVER_SHOTS_SUM","5"))   # 6 -> 5
+OVER_XG_SUM       = float(os.getenv("OVER_XG_SUM","1.4"))
+OVER_SHOTS_SUM    = int(os.getenv("OVER_SHOTS_SUM","5"))
 
-DNB_DOM   = float(os.getenv("DNB_DOM","1.5")) # 1.6 -> 1.5
+DNB_DOM   = float(os.getenv("DNB_DOM","1.5"))
 DNB_SHOTS = float(os.getenv("DNB_SHOTS","1.4"))
 DNB_XG    = float(os.getenv("DNB_XG","1.3"))
 
 LATE_MINUTE_START = int(os.getenv("LATE_MINUTE_START","70"))
-LATE_XG_SUM       = float(os.getenv("LATE_XG_SUM","1.8"))  # 2.0 -> 1.8
-LATE_SHOTS_SUM    = int(os.getenv("LATE_SHOTS_SUM","10"))  # 12 -> 10
-LATE_DA_RUN       = int(os.getenv("LATE_DA_RUN","12"))     # 15 -> 12
+LATE_XG_SUM       = float(os.getenv("LATE_XG_SUM","1.8"))
+LATE_SHOTS_SUM    = int(os.getenv("LATE_SHOTS_SUM","10"))
+LATE_DA_RUN       = int(os.getenv("LATE_DA_RUN","12"))
 
-# Anti-spam
 SIGNAL_COOLDOWN_MIN = int(os.getenv("SIGNAL_COOLDOWN_MIN","7"))
 MARKET_COOLDOWN_MIN = int(os.getenv("MARKET_COOLDOWN_MIN","10"))
 
@@ -67,6 +69,14 @@ tz = pytz.timezone(TIMEZONE)
 LOG_DIR = "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
 LOG_FILE = os.path.join(LOG_DIR, "events.csv")
+
+# --- kíméletes leállítás jelzése ---
+stop_flag = False
+def _handle_term(sig, frm):
+    global stop_flag
+    stop_flag = True
+signal.signal(signal.SIGTERM, _handle_term)
+signal.signal(signal.SIGINT, _handle_term)
 
 # --- Helpers ---
 def now_str():
@@ -106,12 +116,13 @@ def send_message(text: str):
 
 # --- API-Football via RapidAPI ---
 BASE_URL = "https://api-football-v1.p.rapidapi.com/v3"
-
 def _rapidapi_headers():
     return {"x-rapidapi-key": RAPIDAPI_KEY, "x-rapidapi-host": RAPIDAPI_HOST}
 
 def backoff_sleep(i):
-    time.sleep(min(300, 2 ** min(i,6)))
+    # plafonozott backoff, hogy beleférjen a sessionbe
+    sleep_s = min(BACKOFF_MAX_SEC, 2 ** min(i,6))
+    time.sleep(sleep_s)
 
 def fetch_live_fixtures():
     if not RAPIDAPI_KEY:
@@ -121,6 +132,7 @@ def fetch_live_fixtures():
     headers = _rapidapi_headers()
     retry = 0
     while True:
+        if stop_flag: return [], None
         try:
             r = requests.get(url, headers=headers, params=params, timeout=20)
             if r.status_code == 429:
@@ -141,6 +153,7 @@ def fetch_statistics(fixture_id: int):
     headers = _rapidapi_headers()
     retry = 0
     while True:
+        if stop_flag: return None
         try:
             r = requests.get(url, headers=headers, params=params, timeout=20)
             if r.status_code == 429:
@@ -153,7 +166,7 @@ def fetch_statistics(fixture_id: int):
         except Exception:
             return None
 
-# --- Stat kulcs-fallback (API név-eltérések kezelése) ---
+# --- Stat kulcs-fallback ---
 STAT_ALIASES = {
     "Shots on Goal": ["Shots on Goal", "Shots on Target"],
     "Shots off Goal": ["Shots off Goal", "Shots Off Goal"],
@@ -161,7 +174,6 @@ STAT_ALIASES = {
     "Expected Goals": ["Expected Goals", "xG", "Expected goals", "Exp. Goals", "Exp Goals"],
     "Ball Possession": ["Ball Possession", "Possession", "Possession %"],
 }
-
 def extract_stat(stats_list, team_name: str, stat_key: str):
     if not stats_list: 
         return None
@@ -181,7 +193,7 @@ def extract_stat(stats_list, team_name: str, stat_key: str):
                 except: return None
     return None
 
-# --- Meccs-szelekció a stat-kérésekhez ---
+# --- Meccs-szelekció ---
 def select_top_fixtures(fixtures, limit):
     scored = []
     for fx in fixtures or []:
@@ -192,17 +204,17 @@ def select_top_fixtures(fixtures, limit):
             continue
         total_goals = (goals.get("home",0) or 0) + (goals.get("away",0) or 0)
         minute = fix.get("status",{}).get("elapsed") or 0
-        low_goal_bias = 1 if total_goals <= 2 else 0   # 0–2 gól preferált
+        low_goal_bias = 1 if total_goals <= 2 else 0
         mid_late_bias = 1 if 40 <= minute <= 85 else 0
         scored.append((low_goal_bias + mid_late_bias, fx))
     scored.sort(key=lambda t: t[0], reverse=True)
     return [fx for _, fx in scored[:limit]]
 
 # --- Cooldown, deduplikáció ---
-last_stats_fetch = {}      # fixture_id -> ts
-last_signal_time = {}      # (fixture_id) -> ts
-last_market_time = {}      # (fixture_id, market) -> ts
-sent_hashes = set()        # { (fixture_id, market, side_or_kind, minute_bucket) }
+last_stats_fetch = {}
+last_signal_time = {}
+last_market_time = {}
+sent_hashes = set()
 
 def can_fetch_stats(fid):
     last = last_stats_fetch.get(fid, 0)
@@ -223,7 +235,7 @@ def allow_signal(fid, market, side_or_kind, minute):
     sent_hashes.add(h)
     return True
 
-# --- Jelgenerálás ---
+# --- Jelgenerálás (modulok) ---
 def gen_next_goal(fx, stats, thresholds):
     if not ENABLE_NEXT_GOAL: return []
     fixture = fx.get("fixture", {})
@@ -250,9 +262,8 @@ def gen_next_goal(fx, stats, thresholds):
 
     DOM, SHOTS, XG = thresholds
     if minute >= 60:
-        DOM += 0.05; SHOTS += 0.05  # kicsit szigorúbb 60' után
+        DOM += 0.05; SHOTS += 0.05
 
-    picks = []
     if dom >= DOM and shots >= SHOTS and xgr >= XG:
         side = "home"; pick = "Következő gól – Hazai"; est_odds = 1.85
     elif dom <= 1/DOM and shots <= 1/SHOTS and xgr <= 1/XG:
@@ -260,13 +271,13 @@ def gen_next_goal(fx, stats, thresholds):
     else:
         return []
 
-    # egyszerűsített prob
-    prob = 0.57 + 0.33 * min(1.0, (dom-1)/1) * 0.4 \
-                 + 0.33 * min(1.0, (shots-1)/1) * 0.3 \
-                 + 0.33 * min(1.0, (xgr-1)/1) * 0.3
+    prob = 0.57
+    prob += 0.33 * min(1.0, (dom-1)/1) * 0.4
+    prob += 0.33 * min(1.0, (shots-1)/1) * 0.3
+    prob += 0.33 * min(1.0, (xgr-1)/1) * 0.3
     prob = max(0.57, min(0.9, prob))
 
-    picks.append({
+    return [{
         "market": "NEXT_GOAL",
         "league": f"{league.get('country','')} {league.get('name','')}",
         "match": f"{home} – {away}",
@@ -285,8 +296,7 @@ def gen_next_goal(fx, stats, thresholds):
             "home_shots_on": hs_on, "away_shots_on": as_on,
             "home_datt": hdatt, "away_datt": adatt
         }
-    })
-    return picks
+    }]
 
 def gen_over(fx, stats):
     if not ENABLE_OVER: return []
@@ -354,7 +364,6 @@ def gen_dnb(fx, stats):
     xgr   = (hxg + 0.01) / (axg + 0.01)
 
     picks=[]
-    # hátrányból domináló oldal DNB
     if (hg < ag) and (dom >= DNB_DOM and shots >= DNB_SHOTS and xgr >= DNB_XG):
         picks.append({
             "market":"DNB","league":f"{league.get('country','')} {league.get('name','')}",
@@ -463,6 +472,9 @@ def main():
     start_time = time.time()
 
     while True:
+        if stop_flag:
+            break
+
         poll, max_fx = current_limits()
         if poll == 0:
             time.sleep(60)
@@ -478,8 +490,9 @@ def main():
         if fixtures:
             chosen = select_top_fixtures(fixtures, max_fx)
             for fx in chosen:
+                if stop_flag: break
                 fid = fx.get("fixture",{}).get("id")
-                if not fid: 
+                if not fid:
                     continue
                 if not can_fetch_stats(fid):
                     continue
@@ -490,6 +503,7 @@ def main():
 
         signals = []
         for fx, stats in fixtures_with_stats:
+            if stop_flag: break
             fixture = fx.get("fixture",{})
             minute = fixture.get("status",{}).get("elapsed",0) or 0
             fid = fixture.get("id")
@@ -520,7 +534,13 @@ def main():
         if RUN_MINUTES > 0 and (time.time() - start_time) >= RUN_MINUTES * 60:
             break
 
-        time.sleep(poll)
+        # rövidebb sleep, ha hamarosan stop jelet kaptunk
+        for _ in range(int(max(1, poll))):
+            if stop_flag:
+                break
+            time.sleep(1)
+        if stop_flag:
+            break
 
 if __name__ == "__main__":
     main()
