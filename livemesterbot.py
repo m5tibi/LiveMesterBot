@@ -41,13 +41,13 @@ ENABLE_DNB       = os.getenv("ENABLE_DNB","1") == "1"
 ENABLE_LATE_GOAL = os.getenv("ENABLE_LATE_GOAL","1") == "1"
 ENABLE_UNDER     = os.getenv("ENABLE_UNDER","0") == "1"
 
-# --- Küszöbök (v2.3) + xG opcionális kapcsolók ---
+# --- Küszöbök + xG opcionális kapcsolók ---
 NG_DOM   = float(os.getenv("NG_DOM","1.35"))
 NG_SHOTS = float(os.getenv("NG_SHOTS","1.30"))
 NG_XG    = float(os.getenv("NG_XG","1.25"))
 NG_REQUIRE_XG = os.getenv("NG_REQUIRE_XG","0") == "1"
 
-OVER_MINUTE_START = int(os.getenv("OVER_MINUTE_START","40"))
+OVER_MINUTE_START = int(os.getenv("OVER_MINUTE_START","42"))  # kért: 42'
 OVER_XG_SUM       = float(os.getenv("OVER_XG_SUM","1.20"))
 OVER_SHOTS_SUM    = int(os.getenv("OVER_SHOTS_SUM","4"))
 OVER_REQUIRE_XG   = os.getenv("OVER_REQUIRE_XG","0") == "1"
@@ -66,6 +66,13 @@ LATE_REQUIRE_XG   = os.getenv("LATE_REQUIRE_XG","0") == "1"
 SIGNAL_COOLDOWN_MIN = int(os.getenv("SIGNAL_COOLDOWN_MIN","7"))
 MARKET_COOLDOWN_MIN = int(os.getenv("MARKET_COOLDOWN_MIN","10"))
 
+# Piros lap szűrés
+ENABLE_RED_CARD_FILTER = os.getenv("ENABLE_RED_CARD_FILTER","1") == "1"
+
+# Napi jel-limit
+MAX_SIGNALS_PER_DAY = int(os.getenv("MAX_SIGNALS_PER_DAY","60"))
+
+# Debug
 DEBUG_LOG = os.getenv("DEBUG_LOG","1") == "1"
 DEBUG_FILE = "logs/debug.csv"
 
@@ -86,6 +93,9 @@ signal.signal(signal.SIGINT, _handle_term)
 # --- Helpers ---
 def now_str():
     return datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
+
+def today_date_str():
+    return datetime.now(tz).strftime("%Y-%m-%d")
 
 def _parse_hhmm(s):
     h,m = map(int, s.split(":"))
@@ -153,7 +163,7 @@ def fetch_statistics(fixture_id: int):
         return None
     url = f"{BASE_URL}/fixtures/statistics"
     params = {"fixture": fixture_id}
-    headers = _rapidAPI_headers = _rapidapi_headers()
+    headers = _rapidapi_headers()
     retry = 0
     while True:
         if stop_flag: return None
@@ -168,6 +178,34 @@ def fetch_statistics(fixture_id: int):
             return r.json().get("response", [])
         except Exception:
             return None
+
+def fetch_red_card_flag(fixture_id: int):
+    """Visszaadja, hogy esett-e piros lap (True/False)."""
+    if not RAPIDAPI_KEY:
+        return False
+    url = f"{BASE_URL}/fixtures/events"
+    params = {"fixture": fixture_id}
+    headers = _rapidapi_headers()
+    retry = 0
+    while True:
+        if stop_flag: return False
+        try:
+            r = requests.get(url, headers=headers, params=params, timeout=20)
+            if r.status_code == 429:
+                retry += 1
+                backoff_sleep(retry)
+                continue
+            if r.status_code != 200:
+                return False
+            resp = r.json().get("response", [])
+            for ev in resp:
+                if ev.get("type") == "Card":
+                    detail = (ev.get("detail") or "").lower()
+                    if "red" in detail or "second yellow" in detail:
+                        return True
+            return False
+        except Exception:
+            return False
 
 # --- Stat kulcs-fallback ---
 STAT_ALIASES = {
@@ -202,13 +240,13 @@ def select_top_fixtures(fixtures, limit):
     for fx in fixtures or []:
         fix = fx.get("fixture", {})
         goals = fx.get("goals", {})
-        status = fix.get("status",{}).get("short")
-        if status not in ("1H","HT","2H"):
+        status_short = fix.get("status",{}).get("short")
+        if status_short not in ("1H","HT","2H"):
             continue
         total_goals = (goals.get("home",0) or 0) + (goals.get("away",0) or 0)
         minute = fix.get("status",{}).get("elapsed") or 0
         low_goal_bias = 1 if total_goals <= 2 else 0
-        mid_late_bias = 1 if 35 <= minute <= 90 else 0   # kicsit szélesebb ablak
+        mid_late_bias = 1 if 35 <= minute <= 90 else 0
         scored.append((low_goal_bias + mid_late_bias, fx))
     scored.sort(key=lambda t: t[0], reverse=True)
     return [fx for _, fx in scored[:limit]]
@@ -258,17 +296,62 @@ def debug_row(**kw):
             "metrics": kw.get("metrics",""),
         })
 
-# --- Jelgenerálás (xG opcionális logikával) ---
-def ratio(a, b):
-    return (a + 1e-9) / (b + 1e-9)
+def ratio(a, b): return (a + 1e-9) / (b + 1e-9)
 
+# --- RED CARD cache, napi limit számláló ---
+red_card_cache = {}  # fixture_id -> bool
+local_signal_count = 0
+
+def red_card_for_fixture(fid):
+    if not ENABLE_RED_CARD_FILTER:
+        return False
+    if fid in red_card_cache:
+        return red_card_cache[fid]
+    flag = fetch_red_card_flag(fid)
+    red_card_cache[fid] = flag
+    return flag
+
+def read_today_signal_count():
+    try:
+        path = f"data/{today_date_str()}/events.csv"
+        if not os.path.exists(path):
+            return 0
+        c = 0
+        with open(path, "r", encoding="utf-8") as f:
+            # fejléccel együtt – az első sort ne számoljuk, ha header van
+            first = True
+            for line in f:
+                if first:
+                    first = False
+                    # ha a header sor, akkor ne növelj
+                    continue
+                if line.strip():
+                    c += 1
+        return c
+    except Exception:
+        return 0
+
+def can_send_more_today(already_sent_local):
+    today_count = read_today_signal_count()
+    return (today_count + already_sent_local) < MAX_SIGNALS_PER_DAY
+
+# --- Jelgenerálás (xG opcionális) ---
 def gen_next_goal(fx, stats):
     if not ENABLE_NEXT_GOAL: return []
     fixture = fx.get("fixture", {})
     teams   = fx.get("teams", {})
     goals   = fx.get("goals", {})
     league  = fx.get("league", {})
+    status_short = fixture.get("status",{}).get("short")
     minute  = fixture.get("status",{}).get("elapsed",0) or 0
+
+    fid = fixture.get("id")
+    if ENABLE_RED_CARD_FILTER and red_card_for_fixture(fid):
+        debug_row(phase="NGA", fixture_id=fid, minute=minute,
+                  league=f"{league.get('country','')} {league.get('name','')}",
+                  match=f"{teams.get('home',{}).get('name','Home')} – {teams.get('away',{}).get('name','Away')}",
+                  reason="red_card_block", metrics="")
+        return []
 
     home = teams.get("home",{}).get("name","Home")
     away = teams.get("away",{}).get("name","Away")
@@ -284,55 +367,41 @@ def gen_next_goal(fx, stats):
 
     dom   = ratio((hdatt or 0), (adatt or 0))
     shots = ratio((hs_on or 0), (as_on or 0))
-
     xg_ok = (hxg is not None and axg is not None)
     xgr   = ratio((hxg or 0.001), (axg or 0.001)) if xg_ok else None
 
-    # Döntés: xG szükséges-e?
-    require_xg = NG_REQUIRE_XG and xg_ok
     cond_home = (dom >= NG_DOM and shots >= NG_SHOTS and ((xgr is None) or (xgr >= NG_XG) or not NG_REQUIRE_XG))
     cond_away = (dom <= 1/NG_DOM and shots <= 1/NG_SHOTS and ((xgr is None) or (xgr <= 1/NG_XG) or not NG_REQUIRE_XG))
 
-    picks=[]
+    out=[]
     if (xg_ok or not NG_REQUIRE_XG):
         if cond_home:
-            picks.append(("home","Következő gól – Hazai",1.82))
+            side, pick, est_odds = "home","Következő gól – Hazai",1.82
         elif cond_away:
-            picks.append(("away","Következő gól – Vendég",1.92))
+            side, pick, est_odds = "away","Következő gól – Vendég",1.92
         else:
-            debug_row(phase="NEXT_GOAL", fixture_id=fixture.get("id"), minute=minute,
+            debug_row(phase="NGA", fixture_id=fid, minute=minute,
                       league=f"{league.get('country','')} {league.get('name','')}",
                       match=f"{home} – {away}",
                       reason="threshold_fail",
                       metrics=f"dom={dom:.2f}, shots={shots:.2f}, xgr={('n/a' if xgr is None else f'{xgr:.2f}')}")
+            return []
+        prob = 0.58 + 0.25*min(1,(dom-1)/0.6) + 0.25*min(1,(shots-1)/0.6)
+        if xgr is not None: prob += 0.20*min(1,(xgr-1)/0.5)
+        prob = max(0.58, min(0.9, prob))
+        out.append({
+            "market":"NEXT_GOAL","league":f"{league.get('country','')} {league.get('name','')}",
+            "match":f"{home} – {away}","minute":minute,"score":f"{hg}:{ag}",
+            "pick":pick,"prob":round(prob*100,1),"odds":est_odds,
+            "fixture_id":fid,"side":side,
+            "details":{"dom":round(dom,2),"shots":round(shots,2),"xgr":(None if xgr is None else round(xgr,2))}
+        })
     else:
-        debug_row(phase="NEXT_GOAL", fixture_id=fixture.get("id"), minute=minute,
+        debug_row(phase="NGA", fixture_id=fid, minute=minute,
                   league=f"{league.get('country','')} {league.get('name','')}",
                   match=f"{home} – {away}",
                   reason="missing_xg_required",
                   metrics=f"dom={dom:.2f}, shots={shots:.2f}")
-
-    out=[]
-    for side, pick, est_odds in picks:
-        prob = 0.58
-        prob += 0.25*min(1,(dom-1)/0.6)
-        prob += 0.25*min(1,(shots-1)/0.6)
-        if xgr is not None:
-            prob += 0.20*min(1,(xgr-1)/0.5)
-        prob = max(0.58, min(0.9, prob))
-        out.append({
-            "market":"NEXT_GOAL",
-            "league":f"{league.get('country','')} {league.get('name','')}",
-            "match":f"{home} – {away}",
-            "minute":minute,
-            "score":f"{hg}:{ag}",
-            "pick":pick,
-            "prob":round(prob*100,1),
-            "odds":est_odds,
-            "fixture_id":fixture.get("id"),
-            "side":side,
-            "details":{"dom":round(dom,2),"shots":round(shots,2),"xgr":(None if xgr is None else round(xgr,2))}
-        })
     return out
 
 def gen_over(fx, stats):
@@ -341,8 +410,19 @@ def gen_over(fx, stats):
     teams   = fx.get("teams", {})
     goals   = fx.get("goals", {})
     league  = fx.get("league", {})
+    status_short = fixture.get("status",{}).get("short")
     minute  = fixture.get("status",{}).get("elapsed",0) or 0
-    if minute < OVER_MINUTE_START: 
+
+    # HT tiltás + 42' előtti tiltás
+    if status_short == "HT" or minute < OVER_MINUTE_START:
+        return []
+
+    fid = fixture.get("id")
+    if ENABLE_RED_CARD_FILTER and red_card_for_fixture(fid):
+        debug_row(phase="OVER", fixture_id=fid, minute=minute,
+                  league=f"{league.get('country','')} {league.get('name','')}",
+                  match=f"{teams.get('home',{}).get('name','Home')} – {teams.get('away',{}).get('name','Away')}",
+                  reason="red_card_block", metrics="")
         return []
 
     home = teams.get("home",{}).get("name","Home")
@@ -364,21 +444,14 @@ def gen_over(fx, stats):
     if cond_xg and shots_sum >= OVER_SHOTS_SUM:
         est_odds = 1.55 if (hg+ag) <= 1 else 1.85
         return [{
-            "market":"OVER",
-            "league":f"{league.get('country','')} {league.get('name','')}",
-            "match":f"{home} – {away}",
-            "minute":minute,
-            "score":f"{hg}:{ag}",
-            "pick":"Over (live) – gól piacon",
-            "prob":69.0,
-            "odds":est_odds,
-            "fixture_id":fixture.get("id"),
-            "side":"over",
-            "details":{"xg_sum":(None if hxg is None or axg is None else round(xg_sum,2)),
-                       "shots_sum":shots_sum}
+            "market":"OVER","league":f"{league.get('country','')} {league.get('name','')}",
+            "match":f"{home} – {away}","minute":minute,"score":f"{hg}:{ag}",
+            "pick":"Over (live) – gól piacon","prob":69.0,"odds":est_odds,
+            "fixture_id":fid,"side":"over",
+            "details":{"xg_sum":(None if hxg is None or axg is None else round(xg_sum,2)), "shots_sum":shots_sum}
         }]
     else:
-        debug_row(phase="OVER", fixture_id=fixture.get("id"), minute=minute,
+        debug_row(phase="OVER", fixture_id=fid, minute=minute,
                   league=f"{league.get('country','')} {league.get('name','')}",
                   match=f"{home} – {away}",
                   reason="threshold_fail",
@@ -386,6 +459,7 @@ def gen_over(fx, stats):
     return []
 
 def gen_dnb(fx, stats):
+    # DNB-re nem kértél piros lap tiltást, így marad változatlan
     if not ENABLE_DNB: return []
     fixture = fx.get("fixture", {})
     teams   = fx.get("teams", {})
@@ -534,6 +608,7 @@ def main():
         send_message(f"✅ <b>LiveMesterBot (TEST) online</b>\n🕒 {now_str()}")
 
     start_time = time.time()
+    already_sent_local = 0
 
     while True:
         if stop_flag:
@@ -559,8 +634,7 @@ def main():
             for fx in chosen:
                 if stop_flag: break
                 fid = fx.get("fixture",{}).get("id")
-                if not fid:
-                    continue
+                if not fid: continue
                 if not can_fetch_stats(fid):
                     debug_row(phase="STATS", fixture_id=fid, minute=fx.get("fixture",{}).get("status",{}).get("elapsed",0), reason="cooldown_skip", metrics="")
                     continue
@@ -581,6 +655,9 @@ def main():
             for s in merge_signals(fx, stats):
                 market = s["market"]
                 side_or_kind = s.get("side", market)
+                if not can_send_more_today(already_sent_local):
+                    debug_row(phase="ALLOW", fixture_id=fid, minute=minute, reason="daily_cap_reached", metrics=f"MAX={MAX_SIGNALS_PER_DAY}")
+                    continue
                 if allow_signal(fid, market, side_or_kind, minute):
                     signals.append(s)
                 else:
@@ -590,6 +667,9 @@ def main():
             priority = {"LATE_GOAL":1, "NEXT_GOAL":2, "DNB":3, "OVER":4, "UNDER":5}
             signals.sort(key=lambda x: (priority.get(x["market"], 9), -x["prob"]))
             for s in signals:
+                if not can_send_more_today(already_sent_local):
+                    debug_row(phase="SEND", fixture_id=s["fixture_id"], minute=s["minute"], reason="daily_cap_reached", metrics=f"MAX={MAX_SIGNALS_PER_DAY}")
+                    continue
                 msg = (
                     f"⚡ <b>{s['market'].replace('_',' ')} ALERT</b>\n"
                     f"🏟️ <b>Meccs</b>: {s['match']} ({s['score']}, {s['minute']}' )\n"
@@ -600,6 +680,7 @@ def main():
                 )
                 send_message(msg)
                 log_event(s)
+                already_sent_local += 1
         else:
             debug_row(phase="SIGNALS", fixture_id="", minute="", reason="none_after_eval", metrics=f"fx_stats={len(fixtures_with_stats)}")
 
