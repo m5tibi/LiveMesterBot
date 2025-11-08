@@ -1,30 +1,39 @@
-name: LiveMesterBot Daily Summary
+name: Daily Summary
 
-# Napi összesítő 23:05-kor (Budapest idő szerint).
-# Figyelem: a GitHub Actions CRON UTC-ben van. Téli időszámban 22:05 UTC = 23:05 Budapest.
-# Ha nyári időben is pontosan 23:05-öt szeretnél, tegyél be egy MÁSODIK cron sort "5 21 * * *"-tel is.
 on:
-  schedule:
-    - cron: "5 22 * * *"   # 22:05 UTC ~ 23:05 Europe/Budapest (téli idő)
   workflow_dispatch:
+  schedule:
+    - cron: "5 22 * * *"  # 22:05 UTC → 23:05 BUD
+
+concurrency:
+  group: livemesterbot-summary
+  cancel-in-progress: true
 
 jobs:
-  summarize:
+  summary:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: "-1002780259470"
+      RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
+      RAPIDAPI_HOST: "api-football-v1.p.rapidapi.com"
+      TIMEZONE: "Europe/Budapest"
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install deps for summary
-        run: pip install requests pytz
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
 
-      - name: Run daily summary
-        run: python daily_summary.py
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      - name: Run daily_summary
+        run: |
+          python daily_summary.py
