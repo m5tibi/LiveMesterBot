@@ -16,7 +16,13 @@ jobs:
 
     env:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+
+      # Az esti összegzés a csatornára menjen (mindenki látja)
       TELEGRAM_CHAT_ID: "-1002780259470"
+
+      # Admin privát chat ID – ettől függetlenül a /summary parancs privátban megy neked
+      TELEGRAM_ADMIN_CHAT_ID: "YOUR_USER_ID"
+
       RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
       RAPIDAPI_HOST: "api-football-v1.p.rapidapi.com"
       TIMEZONE: "Europe/Budapest"
