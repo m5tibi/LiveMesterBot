@@ -29,3 +29,11 @@ time,league,match,minute,score,pick,prob,odds,fixture_id,details,market
 2025-11-08 22:28:18,Spain La Liga,Espanyol – Villarreal,70,0:2,Over 2.5 (live),65.6,,1390933,"{'xg_sum': None, 'shots_sum': 6.0}",OVER
 2025-11-08 22:28:19,Argentina Liga Profesional Argentina,Racing Club – Defensa Y Justicia,69,1:0,Over 1.5 (live),65.2,,1374277,"{'xg_sum': None, 'shots_sum': 18.0}",OVER
 2025-11-08 22:28:23,Netherlands Eredivisie,PEC Zwolle – Sparta Rotterdam,71,1:0,Over 1.5 (live),65.0,,1380970,"{'xg_sum': None, 'shots_sum': 13.0}",OVER
+2025-11-08 22:41:15,Portugal Primeira Liga,Santa Clara – Sporting CP,53,1:1,Over 2.5 (live),69.4,,1396334,"{'xg_sum': None, 'shots_sum': 10.0}",OVER
+2025-11-08 22:41:15,Argentina Liga Profesional Argentina,Huracan – Newells Old Boys,82,0:2,Over 2.5 (live),65.8,,1374276,"{'xg_sum': None, 'shots_sum': 15.0}",OVER
+2025-11-08 22:41:16,Spain La Liga,Espanyol – Villarreal,82,0:2,Over 2.5 (live),65.8,,1390933,"{'xg_sum': None, 'shots_sum': 9.0}",OVER
+2025-11-08 22:41:16,Argentina Liga Profesional Argentina,Racing Club – Defensa Y Justicia,82,1:0,Over 1.5 (live),63.6,,1374277,"{'xg_sum': None, 'shots_sum': 20.0}",OVER
+2025-11-08 22:41:17,Netherlands Eredivisie,PEC Zwolle – Sparta Rotterdam,84,1:0,Over 1.5 (live),63.4,,1380970,"{'xg_sum': None, 'shots_sum': 15.0}",OVER
+2025-11-08 22:41:20,Chile Primera División,Palestino – Coquimbo Unido,49,0:0,Over 0.5 (live),62.2,,1339219,"{'xg_sum': None, 'shots_sum': 4.0}",OVER
+2025-11-08 22:51:27,Portugal Primeira Liga,Santa Clara – Sporting CP,63,1:1,Over 2.5 (live),68.2,,1396334,"{'xg_sum': None, 'shots_sum': 11.0}",OVER
+2025-11-08 22:51:28,Chile Primera División,Palestino – Coquimbo Unido,59,0:0,Over 0.5 (live),61.1,,1339219,"{'xg_sum': None, 'shots_sum': 4.0}",OVER
