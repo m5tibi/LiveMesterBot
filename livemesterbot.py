@@ -31,37 +31,43 @@ STATS_COOLDOWN_MIN = int(os.getenv("STATS_COOLDOWN_MIN","5"))
 TIMEZONE = os.getenv("TIMEZONE","Europe/Budapest")
 MUTE_NO_SIGNAL = os.getenv("MUTE_NO_SIGNAL", "1") == "1"
 SEND_ONLINE_ON_START = os.getenv("SEND_ONLINE_ON_START", "0") == "1"
-RUN_MINUTES = int(os.getenv("RUN_MINUTES", "8"))  # ← alapból 8 perc
-
+RUN_MINUTES = int(os.getenv("RUN_MINUTES", "8"))
 BACKOFF_MAX_SEC = int(os.getenv("BACKOFF_MAX_SEC", "60"))
 
-# --- Piacok engedélyezése ---
+# --- Piacok ---
 ENABLE_NEXT_GOAL = os.getenv("ENABLE_NEXT_GOAL","1") == "1"
 ENABLE_OVER      = os.getenv("ENABLE_OVER","1") == "1"
 ENABLE_DNB       = os.getenv("ENABLE_DNB","1") == "1"
 ENABLE_LATE_GOAL = os.getenv("ENABLE_LATE_GOAL","1") == "1"
 ENABLE_UNDER     = os.getenv("ENABLE_UNDER","0") == "1"
 
-# --- Küszöbök (érzékeny) ---
-NG_DOM   = float(os.getenv("NG_DOM","1.5"))
-NG_SHOTS = float(os.getenv("NG_SHOTS","1.4"))
-NG_XG    = float(os.getenv("NG_XG","1.3"))
+# --- Küszöbök (v2.3) + xG opcionális kapcsolók ---
+NG_DOM   = float(os.getenv("NG_DOM","1.35"))
+NG_SHOTS = float(os.getenv("NG_SHOTS","1.30"))
+NG_XG    = float(os.getenv("NG_XG","1.25"))
+NG_REQUIRE_XG = os.getenv("NG_REQUIRE_XG","0") == "1"
 
-OVER_MINUTE_START = int(os.getenv("OVER_MINUTE_START","45"))
-OVER_XG_SUM       = float(os.getenv("OVER_XG_SUM","1.4"))
-OVER_SHOTS_SUM    = int(os.getenv("OVER_SHOTS_SUM","5"))
+OVER_MINUTE_START = int(os.getenv("OVER_MINUTE_START","40"))
+OVER_XG_SUM       = float(os.getenv("OVER_XG_SUM","1.20"))
+OVER_SHOTS_SUM    = int(os.getenv("OVER_SHOTS_SUM","4"))
+OVER_REQUIRE_XG   = os.getenv("OVER_REQUIRE_XG","0") == "1"
 
-DNB_DOM   = float(os.getenv("DNB_DOM","1.5"))
-DNB_SHOTS = float(os.getenv("DNB_SHOTS","1.4"))
-DNB_XG    = float(os.getenv("DNB_XG","1.3"))
+DNB_DOM   = float(os.getenv("DNB_DOM","1.45"))
+DNB_SHOTS = float(os.getenv("DNB_SHOTS","1.35"))
+DNB_XG    = float(os.getenv("DNB_XG","1.25"))
+DNB_REQUIRE_XG = os.getenv("DNB_REQUIRE_XG","0") == "1"
 
-LATE_MINUTE_START = int(os.getenv("LATE_MINUTE_START","70"))
-LATE_XG_SUM       = float(os.getenv("LATE_XG_SUM","1.8"))
-LATE_SHOTS_SUM    = int(os.getenv("LATE_SHOTS_SUM","10"))
-LATE_DA_RUN       = int(os.getenv("LATE_DA_RUN","12"))
+LATE_MINUTE_START = int(os.getenv("LATE_MINUTE_START","68"))
+LATE_XG_SUM       = float(os.getenv("LATE_XG_SUM","1.60"))
+LATE_SHOTS_SUM    = int(os.getenv("LATE_SHOTS_SUM","9"))
+LATE_DA_RUN       = int(os.getenv("LATE_DA_RUN","10"))
+LATE_REQUIRE_XG   = os.getenv("LATE_REQUIRE_XG","0") == "1"
 
 SIGNAL_COOLDOWN_MIN = int(os.getenv("SIGNAL_COOLDOWN_MIN","7"))
 MARKET_COOLDOWN_MIN = int(os.getenv("MARKET_COOLDOWN_MIN","10"))
+
+DEBUG_LOG = os.getenv("DEBUG_LOG","1") == "1"
+DEBUG_FILE = "logs/debug.csv"
 
 tz = pytz.timezone(TIMEZONE)
 
@@ -147,7 +153,7 @@ def fetch_statistics(fixture_id: int):
         return None
     url = f"{BASE_URL}/fixtures/statistics"
     params = {"fixture": fixture_id}
-    headers = _rapidapi_headers()
+    headers = _rapidAPI_headers = _rapidapi_headers()
     retry = 0
     while True:
         if stop_flag: return None
@@ -202,7 +208,7 @@ def select_top_fixtures(fixtures, limit):
         total_goals = (goals.get("home",0) or 0) + (goals.get("away",0) or 0)
         minute = fix.get("status",{}).get("elapsed") or 0
         low_goal_bias = 1 if total_goals <= 2 else 0
-        mid_late_bias = 1 if 40 <= minute <= 85 else 0
+        mid_late_bias = 1 if 35 <= minute <= 90 else 0   # kicsit szélesebb ablak
         scored.append((low_goal_bias + mid_late_bias, fx))
     scored.sort(key=lambda t: t[0], reverse=True)
     return [fx for _, fx in scored[:limit]]
@@ -232,8 +238,31 @@ def allow_signal(fid, market, side_or_kind, minute):
     sent_hashes.add(h)
     return True
 
-# --- Jelgenerálás (modulok) ---
-def gen_next_goal(fx, stats, thresholds):
+# --- Debug napló ---
+def debug_row(**kw):
+    if not DEBUG_LOG: 
+        return
+    is_new = not os.path.exists(DEBUG_FILE)
+    with open(DEBUG_FILE, "a", newline="", encoding="utf-8") as f:
+        fields = ["ts","phase","fixture_id","minute","league","match","reason","metrics"]
+        w = csv.DictWriter(f, fieldnames=fields)
+        if is_new: w.writeheader()
+        w.writerow({
+            "ts": now_str(),
+            "phase": kw.get("phase",""),
+            "fixture_id": kw.get("fixture_id",""),
+            "minute": kw.get("minute",""),
+            "league": kw.get("league",""),
+            "match": kw.get("match",""),
+            "reason": kw.get("reason",""),
+            "metrics": kw.get("metrics",""),
+        })
+
+# --- Jelgenerálás (xG opcionális logikával) ---
+def ratio(a, b):
+    return (a + 1e-9) / (b + 1e-9)
+
+def gen_next_goal(fx, stats):
     if not ENABLE_NEXT_GOAL: return []
     fixture = fx.get("fixture", {})
     teams   = fx.get("teams", {})
@@ -246,54 +275,65 @@ def gen_next_goal(fx, stats, thresholds):
     hg = goals.get("home",0) or 0
     ag = goals.get("away",0) or 0
 
-    hs_on = extract_stat(stats, home, "Shots on Goal") or 0
-    as_on = extract_stat(stats, away, "Shots on Goal") or 0
-    hdatt = extract_stat(stats, home, "Dangerous Attacks") or 0
-    adatt = extract_stat(stats, away, "Dangerous Attacks") or 0
-    hxg   = extract_stat(stats, home, "Expected Goals") or 0
-    axg   = extract_stat(stats, away, "Expected Goals") or 0
+    hs_on = extract_stat(stats, home, "Shots on Goal")
+    as_on = extract_stat(stats, away, "Shots on Goal")
+    hdatt = extract_stat(stats, home, "Dangerous Attacks")
+    adatt = extract_stat(stats, away, "Dangerous Attacks")
+    hxg   = extract_stat(stats, home, "Expected Goals")
+    axg   = extract_stat(stats, away, "Expected Goals")
 
-    dom   = (hdatt + 1) / (adatt + 1)
-    shots = (hs_on + 1) / (as_on + 1)
-    xgr   = (hxg + 0.01) / (axg + 0.01)
+    dom   = ratio((hdatt or 0), (adatt or 0))
+    shots = ratio((hs_on or 0), (as_on or 0))
 
-    DOM, SHOTS, XG = thresholds
-    if minute >= 60:
-        DOM += 0.05; SHOTS += 0.05
+    xg_ok = (hxg is not None and axg is not None)
+    xgr   = ratio((hxg or 0.001), (axg or 0.001)) if xg_ok else None
 
-    if dom >= DOM and shots >= SHOTS and xgr >= XG:
-        side = "home"; pick = "Következő gól – Hazai"; est_odds = 1.85
-    elif dom <= 1/DOM and shots <= 1/SHOTS and xgr <= 1/XG:
-        side = "away"; pick = "Következő gól – Vendég"; est_odds = 1.95
+    # Döntés: xG szükséges-e?
+    require_xg = NG_REQUIRE_XG and xg_ok
+    cond_home = (dom >= NG_DOM and shots >= NG_SHOTS and ((xgr is None) or (xgr >= NG_XG) or not NG_REQUIRE_XG))
+    cond_away = (dom <= 1/NG_DOM and shots <= 1/NG_SHOTS and ((xgr is None) or (xgr <= 1/NG_XG) or not NG_REQUIRE_XG))
+
+    picks=[]
+    if (xg_ok or not NG_REQUIRE_XG):
+        if cond_home:
+            picks.append(("home","Következő gól – Hazai",1.82))
+        elif cond_away:
+            picks.append(("away","Következő gól – Vendég",1.92))
+        else:
+            debug_row(phase="NEXT_GOAL", fixture_id=fixture.get("id"), minute=minute,
+                      league=f"{league.get('country','')} {league.get('name','')}",
+                      match=f"{home} – {away}",
+                      reason="threshold_fail",
+                      metrics=f"dom={dom:.2f}, shots={shots:.2f}, xgr={('n/a' if xgr is None else f'{xgr:.2f}')}")
     else:
-        return []
+        debug_row(phase="NEXT_GOAL", fixture_id=fixture.get("id"), minute=minute,
+                  league=f"{league.get('country','')} {league.get('name','')}",
+                  match=f"{home} – {away}",
+                  reason="missing_xg_required",
+                  metrics=f"dom={dom:.2f}, shots={shots:.2f}")
 
-    prob = 0.57
-    prob += 0.33 * min(1.0, (dom-1)/1) * 0.4
-    prob += 0.33 * min(1.0, (shots-1)/1) * 0.3
-    prob += 0.33 * min(1.0, (xgr-1)/1) * 0.3
-    prob = max(0.57, min(0.9, prob))
-
-    return [{
-        "market": "NEXT_GOAL",
-        "league": f"{league.get('country','')} {league.get('name','')}",
-        "match": f"{home} – {away}",
-        "minute": minute,
-        "score": f"{hg}:{ag}",
-        "pick": pick,
-        "prob": round(prob*100,1),
-        "odds": est_odds,
-        "fixture_id": fixture.get("id"),
-        "side": side,
-        "details": {
-            "dominance": round(dom,2),
-            "shots_ratio": round(shots,2),
-            "xg_ratio": round(xgr,2),
-            "home_xg": hxg, "away_xg": axg,
-            "home_shots_on": hs_on, "away_shots_on": as_on,
-            "home_datt": hdatt, "away_datt": adatt
-        }
-    }]
+    out=[]
+    for side, pick, est_odds in picks:
+        prob = 0.58
+        prob += 0.25*min(1,(dom-1)/0.6)
+        prob += 0.25*min(1,(shots-1)/0.6)
+        if xgr is not None:
+            prob += 0.20*min(1,(xgr-1)/0.5)
+        prob = max(0.58, min(0.9, prob))
+        out.append({
+            "market":"NEXT_GOAL",
+            "league":f"{league.get('country','')} {league.get('name','')}",
+            "match":f"{home} – {away}",
+            "minute":minute,
+            "score":f"{hg}:{ag}",
+            "pick":pick,
+            "prob":round(prob*100,1),
+            "odds":est_odds,
+            "fixture_id":fixture.get("id"),
+            "side":side,
+            "details":{"dom":round(dom,2),"shots":round(shots,2),"xgr":(None if xgr is None else round(xgr,2))}
+        })
+    return out
 
 def gen_over(fx, stats):
     if not ENABLE_OVER: return []
@@ -302,38 +342,47 @@ def gen_over(fx, stats):
     goals   = fx.get("goals", {})
     league  = fx.get("league", {})
     minute  = fixture.get("status",{}).get("elapsed",0) or 0
-    if minute < OVER_MINUTE_START: return []
+    if minute < OVER_MINUTE_START: 
+        return []
 
     home = teams.get("home",{}).get("name","Home")
     away = teams.get("away",{}).get("name","Away")
     hg = goals.get("home",0) or 0
     ag = goals.get("away",0) or 0
 
-    hxg = extract_stat(stats, home, "Expected Goals") or 0
-    axg = extract_stat(stats, away, "Expected Goals") or 0
+    hxg = extract_stat(stats, home, "Expected Goals")
+    axg = extract_stat(stats, away, "Expected Goals")
     hs_on = extract_stat(stats, home, "Shots on Goal") or 0
     as_on = extract_stat(stats, away, "Shots on Goal") or 0
     hs_off = extract_stat(stats, home, "Shots off Goal") or 0
     as_off = extract_stat(stats, away, "Shots off Goal") or 0
 
-    xg_sum = hxg + axg
+    xg_sum = (hxg or 0) + (axg or 0)
     shots_sum = (hs_on + as_on) + (hs_off + as_off)
 
-    if xg_sum >= OVER_XG_SUM and shots_sum >= OVER_SHOTS_SUM:
-        est_odds = 1.60 if (hg+ag) <= 1 else 1.90
+    cond_xg = (xg_sum >= OVER_XG_SUM) if (hxg is not None and axg is not None) else True if not OVER_REQUIRE_XG else False
+    if cond_xg and shots_sum >= OVER_SHOTS_SUM:
+        est_odds = 1.55 if (hg+ag) <= 1 else 1.85
         return [{
-            "market": "OVER",
-            "league": f"{league.get('country','')} {league.get('name','')}",
-            "match": f"{home} – {away}",
-            "minute": minute,
-            "score": f"{hg}:{ag}",
-            "pick": "Over (live) – gól piacon",
-            "prob": 70.0,
-            "odds": est_odds,
-            "fixture_id": fixture.get("id"),
-            "side": "over",
-            "details": {"xg_sum": round(xg_sum,2), "shots_sum": shots_sum}
+            "market":"OVER",
+            "league":f"{league.get('country','')} {league.get('name','')}",
+            "match":f"{home} – {away}",
+            "minute":minute,
+            "score":f"{hg}:{ag}",
+            "pick":"Over (live) – gól piacon",
+            "prob":69.0,
+            "odds":est_odds,
+            "fixture_id":fixture.get("id"),
+            "side":"over",
+            "details":{"xg_sum":(None if hxg is None or axg is None else round(xg_sum,2)),
+                       "shots_sum":shots_sum}
         }]
+    else:
+        debug_row(phase="OVER", fixture_id=fixture.get("id"), minute=minute,
+                  league=f"{league.get('country','')} {league.get('name','')}",
+                  match=f"{home} – {away}",
+                  reason="threshold_fail",
+                  metrics=f"xg_sum={('n/a' if hxg is None or axg is None else f'{xg_sum:.2f}')}, shots_sum={shots_sum}")
     return []
 
 def gen_dnb(fx, stats):
@@ -349,35 +398,44 @@ def gen_dnb(fx, stats):
     hg = goals.get("home",0) or 0
     ag = goals.get("away",0) or 0
 
-    hs_on = extract_stat(stats, home, "Shots on Goal") or 0
-    as_on = extract_stat(stats, away, "Shots on Goal") or 0
-    hdatt = extract_stat(stats, home, "Dangerous Attacks") or 0
-    adatt = extract_stat(stats, away, "Dangerous Attacks") or 0
-    hxg   = extract_stat(stats, home, "Expected Goals") or 0
-    axg   = extract_stat(stats, away, "Expected Goals") or 0
+    hs_on = extract_stat(stats, home, "Shots on Goal")
+    as_on = extract_stat(stats, away, "Shots on Goal")
+    hdatt = extract_stat(stats, home, "Dangerous Attacks")
+    adatt = extract_stat(stats, away, "Dangerous Attacks")
+    hxg   = extract_stat(stats, home, "Expected Goals")
+    axg   = extract_stat(stats, away, "Expected Goals")
 
-    dom   = (hdatt + 1) / (adatt + 1)
-    shots = (hs_on + 1) / (as_on + 1)
-    xgr   = (hxg + 0.01) / (axg + 0.01)
+    dom   = ratio((hdatt or 0), (adatt or 0))
+    shots = ratio((hs_on or 0), (as_on or 0))
+    xgr   = ratio((hxg or 0.001), (axg or 0.001)) if (hxg is not None and axg is not None) else None
 
-    picks=[]
-    if (hg < ag) and (dom >= DNB_DOM and shots >= DNB_SHOTS and xgr >= DNB_XG):
-        picks.append({
+    cond_home = (hg < ag) and (dom >= DNB_DOM and shots >= DNB_SHOTS and ((xgr is None) or (xgr >= DNB_XG) or not DNB_REQUIRE_XG))
+    cond_away = (ag < hg) and (dom <= 1/DNB_DOM and shots <= 1/DNB_SHOTS and ((xgr is None) or (xgr <= 1/DNB_XG) or not DNB_REQUIRE_XG))
+
+    out=[]
+    if cond_home:
+        out.append({
             "market":"DNB","league":f"{league.get('country','')} {league.get('name','')}",
             "match":f"{home} – {away}","minute":minute,"score":f"{hg}:{ag}",
-            "pick":"Hazai DNB","prob":68.0,"odds":1.75,"fixture_id":fixture.get("id"),
+            "pick":"Hazai DNB","prob":68.0,"odds":1.72,"fixture_id":fixture.get("id"),
             "side":"home",
-            "details":{"dominance":round(dom,2),"shots_ratio":round(shots,2),"xg_ratio":round(xgr,2)}
+            "details":{"dom":round(dom,2),"shots":round(shots,2),"xgr":(None if xgr is None else round(xgr,2))}
         })
-    if (ag < hg) and (1/dom >= DNB_DOM and 1/shots >= DNB_SHOTS and 1/xgr >= DNB_XG):
-        picks.append({
+    elif cond_away:
+        out.append({
             "market":"DNB","league":f"{league.get('country','')} {league.get('name','')}",
             "match":f"{home} – {away}","minute":minute,"score":f"{hg}:{ag}",
-            "pick":"Vendég DNB","prob":68.0,"odds":1.85,"fixture_id":fixture.get("id"),
+            "pick":"Vendég DNB","prob":68.0,"odds":1.82,"fixture_id":fixture.get("id"),
             "side":"away",
-            "details":{"dominance":round(1/dom,2),"shots_ratio":round(1/shots,2),"xg_ratio":round(1/xgr,2)}
+            "details":{"dom":round(1/dom,2),"shots":round(1/shots,2),"xgr":(None if xgr is None else round(1/xgr,2))}
         })
-    return picks
+    else:
+        debug_row(phase="DNB", fixture_id=fixture.get("id"), minute=minute,
+                  league=f"{league.get('country','')} {league.get('name','')}",
+                  match=f"{home} – {away}",
+                  reason="threshold_fail",
+                  metrics=f"dom={dom:.2f}, shots={shots:.2f}, xgr={('n/a' if xgr is None else f'{xgr:.2f}')}")
+    return out
 
 def gen_late_goal(fx, stats):
     if not ENABLE_LATE_GOAL: return []
@@ -386,15 +444,16 @@ def gen_late_goal(fx, stats):
     goals   = fx.get("goals", {})
     league  = fx.get("league", {})
     minute  = fixture.get("status",{}).get("elapsed",0) or 0
-    if minute < LATE_MINUTE_START: return []
+    if minute < LATE_MINUTE_START: 
+        return []
 
     home = teams.get("home",{}).get("name","Home")
     away = teams.get("away",{}).get("name","Away")
     hg = goals.get("home",0) or 0
     ag = goals.get("away",0) or 0
 
-    hxg = extract_stat(stats, home, "Expected Goals") or 0
-    axg = extract_stat(stats, away, "Expected Goals") or 0
+    hxg = extract_stat(stats, home, "Expected Goals")
+    axg = extract_stat(stats, away, "Expected Goals")
     hs_on = extract_stat(stats, home, "Shots on Goal") or 0
     as_on = extract_stat(stats, away, "Shots on Goal") or 0
     hs_off = extract_stat(stats, home, "Shots off Goal") or 0
@@ -402,19 +461,20 @@ def gen_late_goal(fx, stats):
     hdatt = extract_stat(stats, home, "Dangerous Attacks") or 0
     adatt = extract_stat(stats, away, "Dangerous Attacks") or 0
 
-    xg_sum = hxg + axg
+    xg_sum = (hxg or 0) + (axg or 0)
     shots_sum = (hs_on + as_on) + (hs_off + as_off)
     da_run = (hdatt + adatt)
 
-    if xg_sum >= LATE_XG_SUM and shots_sum >= LATE_SHOTS_SUM and da_run >= LATE_DA_RUN:
-        dom = (hdatt + 1) / (adatt + 1)
+    cond_xg = (xg_sum >= LATE_XG_SUM) if (hxg is not None and axg is not None) else True if not LATE_REQUIRE_XG else False
+    if cond_xg and shots_sum >= LATE_SHOTS_SUM and da_run >= LATE_DA_RUN:
+        dom = ratio(hdatt, adatt)
         if dom >= 1.2:
             side = "home"; pick = "Következő gól – Hazai (Late)"
         elif dom <= (1/1.2):
             side = "away"; pick = "Következő gól – Vendég (Late)"
         else:
             side = "over"; pick = "Over 0.5 (Late)"
-        est_odds = 1.70 if side != "over" else 1.65
+        est_odds = 1.68 if side != "over" else 1.62
 
         return [{
             "market":"LATE_GOAL",
@@ -427,13 +487,20 @@ def gen_late_goal(fx, stats):
             "odds":est_odds,
             "fixture_id":fixture.get("id"),
             "side":side,
-            "details":{"xg_sum":round(xg_sum,2),"shots_sum":shots_sum,"da_run":da_run,"dom":round(dom,2)}
+            "details":{"xg_sum":(None if hxg is None or axg is None else round(xg_sum,2)),
+                       "shots_sum":shots_sum,"da_run":da_run,"dom":round(dom,2)}
         }]
+    else:
+        debug_row(phase="LATE", fixture_id=fixture.get("id"), minute=minute,
+                  league=f"{league.get('country','')} {league.get('name','')}",
+                  match=f"{home} – {away}",
+                  reason="threshold_fail",
+                  metrics=f"xg_sum={('n/a' if hxg is None or axg is None else f'{xg_sum:.2f}')}, shots_sum={shots_sum}, da_run={da_run}")
     return []
 
 def merge_signals(fx, stats):
     out = []
-    out += gen_next_goal(fx, stats, (NG_DOM, NG_SHOTS, NG_XG))
+    out += gen_next_goal(fx, stats)
     out += gen_over(fx, stats)
     out += gen_dnb(fx, stats)
     out += gen_late_goal(fx, stats)
@@ -480,23 +547,30 @@ def main():
             continue
 
         fixtures, err = fetch_live_fixtures()
-        if err and not MUTE_NO_SIGNAL:
-            send_message(f"ℹ️ <b>Info</b>: {err}")
+        if fixtures is None and err:
+            debug_row(phase="FETCH_FIX", fixture_id="", minute="", reason="api_error", metrics=str(err))
+        elif fixtures is not None:
+            debug_row(phase="FETCH_FIX", fixture_id="", minute="", reason="ok", metrics=f"fixtures={len(fixtures)}")
 
         fixtures_with_stats = []
         if fixtures:
             chosen = select_top_fixtures(fixtures, max_fx)
+            debug_row(phase="SELECT", fixture_id="", minute="", reason="chosen", metrics=f"{len(chosen)}/{len(fixtures)} selected (limit {max_fx})")
             for fx in chosen:
                 if stop_flag: break
                 fid = fx.get("fixture",{}).get("id")
                 if not fid:
                     continue
                 if not can_fetch_stats(fid):
+                    debug_row(phase="STATS", fixture_id=fid, minute=fx.get("fixture",{}).get("status",{}).get("elapsed",0), reason="cooldown_skip", metrics="")
                     continue
                 stats = fetch_statistics(fid)
                 if stats is not None:
                     last_stats_fetch[fid] = time.time()
                     fixtures_with_stats.append((fx, stats))
+                    debug_row(phase="STATS", fixture_id=fid, minute=fx.get("fixture",{}).get("status",{}).get("elapsed",0), reason="ok", metrics="got_stats")
+                else:
+                    debug_row(phase="STATS", fixture_id=fid, minute=fx.get("fixture",{}).get("status",{}).get("elapsed",0), reason="stats_none", metrics="")
 
         signals = []
         for fx, stats in fixtures_with_stats:
@@ -509,6 +583,8 @@ def main():
                 side_or_kind = s.get("side", market)
                 if allow_signal(fid, market, side_or_kind, minute):
                     signals.append(s)
+                else:
+                    debug_row(phase="ALLOW", fixture_id=fid, minute=minute, reason="cooldown_dedupe_block", metrics=f"{market}/{side_or_kind}")
 
         if signals:
             priority = {"LATE_GOAL":1, "NEXT_GOAL":2, "DNB":3, "OVER":4, "UNDER":5}
@@ -525,8 +601,7 @@ def main():
                 send_message(msg)
                 log_event(s)
         else:
-            if not MUTE_NO_SIGNAL:
-                send_message(f"💤 Nincs erős jel ebben a ciklusban. ({now_str()})")
+            debug_row(phase="SIGNALS", fixture_id="", minute="", reason="none_after_eval", metrics=f"fx_stats={len(fixtures_with_stats)}")
 
         if RUN_MINUTES > 0 and (time.time() - start_time) >= RUN_MINUTES * 60:
             break
