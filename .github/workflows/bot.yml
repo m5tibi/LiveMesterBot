@@ -15,12 +15,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 12
     permissions:
-      contents: write   # <- kell a git commit/push-hoz
+      contents: write   # <- kell a git commit/push-hoz a napi data/ perzisztálásnál
 
     env:
       # --- Kötelező kulcsok (Secrets-ben tárolva) ---
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+
+      # Tippek célcsatornája (bárki láthatja a csatornán): t.me/livemester → pl. -1002780259470
       TELEGRAM_CHAT_ID: "-1002780259470"
+
+      # Admin privát chat ID – csak innen fogadjuk a /summary parancsot
+      TELEGRAM_ADMIN_CHAT_ID: "1326707238"
 
       RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
       RAPIDAPI_HOST: "api-football-v1.p.rapidapi.com"
@@ -109,7 +114,6 @@ jobs:
           if [ -f logs/events.csv ]; then
             DATE=$(TZ="Europe/Budapest" date +%F)
             mkdir -p "data/${DATE}"
-            # ha már van napi fájl, fűzzük hozzá a mai új sorokat (header nélkül)
             if [ -f "data/${DATE}/events.csv" ]; then
               tail -n +2 logs/events.csv >> "data/${DATE}/events.csv" || true
             else
