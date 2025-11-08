@@ -1,9 +1,9 @@
 name: LiveMesterBot (batch)
 
-# Ne fusson párhuzamosan
+# Egyszerre csak 1 fusson, de NE szakítsuk meg a futót (sorban áll a következő)
 concurrency:
   group: livemesterbot
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 # 05:00–23:00 Europe/Budapest → téli időben UTC 04–22
 on:
@@ -27,8 +27,9 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run LiveMesterBot (9-min session; cron restarts)
-        timeout-minutes: 11
+      - name: Run LiveMesterBot (8-min session; cron restarts)
+        # Adunk bő timeoutot: a Python lépés elférjen, és a commit-step is lefuthasson
+        timeout-minutes: 12
         run: python livemesterbot.py
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -54,10 +55,10 @@ jobs:
           TIMEZONE: Europe/Budapest
 
           # Futási modell
-          RUN_MINUTES: "9"                # 9 perc futás / job (puffer a 15 perces cronhoz)
-          MUTE_NO_SIGNAL: "1"             # ne küldjön 'nincs jel' üzeneteket
+          RUN_MINUTES: "8"                # 8 perc aktív futás (bő puffer a 15 perces ütemhez)
+          MUTE_NO_SIGNAL: "1"             # ne küldjön 'nincs jel' üzenetet
           SEND_ONLINE_ON_START: "0"       # induláskor ne küldjön 'online' üzenetet
-          BACKOFF_MAX_SEC: "60"           # 429 esetén max 60s backoff (ne nyúljon túl)
+          BACKOFF_MAX_SEC: "60"           # 429 esetén max 60s backoff
 
           # Piacok
           ENABLE_NEXT_GOAL: "1"
@@ -66,7 +67,7 @@ jobs:
           ENABLE_LATE_GOAL: "1"
           ENABLE_UNDER: "0"
 
-          # Küszöbök
+          # Küszöbök (érzékeny)
           NG_DOM: "1.5"
           NG_SHOTS: "1.4"
           NG_XG: "1.3"
