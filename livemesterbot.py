@@ -72,10 +72,10 @@ ENABLE_RED_CARD_FILTER = os.getenv("ENABLE_RED_CARD_FILTER","1") == "1"
 # Napi jel-limit
 MAX_SIGNALS_PER_DAY = int(os.getenv("MAX_SIGNALS_PER_DAY","60"))
 
-# Odds megjelenítés módja: none | estimated
-ODDS_MODE = os.getenv("ODDS_MODE","none").strip().lower()
-if ODDS_MODE not in ("none","estimated"):
-    ODDS_MODE = "none"
+# --- ODDS ---
+ODDS_PROVIDER = os.getenv("ODDS_PROVIDER","api_football").strip().lower()  # api_football | none
+ODDS_MODE     = os.getenv("ODDS_MODE","none").strip().lower()              # none | shown
+ODDS_BOOKMAKER= (os.getenv("ODDS_BOOKMAKER","bet365") or "").strip().lower()
 
 # Debug
 DEBUG_LOG = os.getenv("DEBUG_LOG","1") == "1"
@@ -155,8 +155,7 @@ def fetch_live_fixtures():
             r = requests.get(url, headers=headers, params=params, timeout=20)
             if r.status_code == 429:
                 retry += 1
-                backoff_sleep(retry)
-                continue
+                backoff_sleep(retry); continue
             if r.status_code != 200:
                 return None, f"API hiba: {r.status_code} {r.text}"
             return r.json().get("response", []), None
@@ -176,8 +175,7 @@ def fetch_statistics(fixture_id: int):
             r = requests.get(url, headers=headers, params=params, timeout=20)
             if r.status_code == 429:
                 retry += 1
-                backoff_sleep(retry)
-                continue
+                backoff_sleep(retry); continue
             if r.status_code != 200:
                 return None
             return r.json().get("response", [])
@@ -197,8 +195,7 @@ def fetch_red_card_flag(fixture_id: int):
             r = requests.get(url, headers=headers, params=params, timeout=20)
             if r.status_code == 429:
                 retry += 1
-                backoff_sleep(retry)
-                continue
+                backoff_sleep(retry); continue
             if r.status_code != 200:
                 return False
             resp = r.json().get("response", [])
@@ -210,6 +207,131 @@ def fetch_red_card_flag(fixture_id: int):
             return False
         except Exception:
             return False
+
+# --- Live odds (API-FOOTBALL) ---
+_odds_cache = {}  # (fixture_id) -> (timestamp, odds_payload)
+
+def fetch_live_odds_api_football(fixture_id: int):
+    # cache 60 mp
+    tnow = time.time()
+    cached = _odds_cache.get(fixture_id)
+    if cached and (tnow - cached[0] <= 60):
+        return cached[1]
+
+    url = f"{BASE_URL}/odds/live"
+    params = {"fixture": fixture_id}
+    headers = _rapidapi_headers()
+    try:
+        r = requests.get(url, headers=headers, params=params, timeout=20)
+        if r.status_code != 200:
+            return None
+        payload = r.json().get("response", [])
+        _odds_cache[fixture_id] = (tnow, payload)
+        return payload
+    except Exception:
+        return None
+
+def pick_odds_for_market(odds_payload, market_kind: str, preferred_book: str):
+    """
+    market_kind ∈ {"OVER", "NEXT_GOAL", "DNB", "LATE_GOAL"}
+    Visszaad: (bookmaker_name, market_label, price_text) vagy None
+    """
+    if not odds_payload:
+        return None
+
+    # segítség: normalizálás
+    preferred_book = (preferred_book or "").lower()
+
+    # odds_payload szerkezete API-FOOTBALL-nál (röviden):
+    # [
+    #   {
+    #     "fixture": {...},
+    #     "update": "...",
+    #     "bookmakers": [
+    #       {
+    #         "id": ...,
+    #         "name": "Bet365",
+    #         "bets": [
+    #           {"id": ..., "name": "Match Winner"|"Next Goal"|"Over/Under"|"Totals"|...,
+    #            "values": [
+    #               {"value": "Over 2.5", "odd": "1.85"}, ...
+    #            ]}
+    #         ]
+    #       }
+    #     ]
+    #   }
+    # ]
+
+    def match_market_name(nm: str, targets: list[str]) -> bool:
+        if not nm: return False
+        low = nm.lower()
+        return any(tok in low for tok in targets)
+
+    # célkönyv: preferált, aztán első elérhető
+    books = []
+    for item in odds_payload:
+        for bk in (item.get("bookmakers") or []):
+            name = (bk.get("name") or "")
+            if preferred_book and name.lower() == preferred_book:
+                books = [bk]  # preferált az első
+                break
+            books.append(bk)
+        if books:
+            break
+
+    if not books:
+        return None
+
+    # ha preferált nem volt, vegyük az elsőt
+    book = books[0]
+    bname = book.get("name") or "Bookmaker"
+
+    bets = book.get("bets") or []
+    # piac-keresés
+    if market_kind in ("OVER","LATE_GOAL"):
+        targets = ["over/under", "totals"]
+        # válasszunk egy "Over X.Y" értéket. Igyekszünk előnyben részesíteni 0.5, 1.5, 2.5-t
+        wanted_lines = ["Over 2.5","Over 1.5","Over 0.5","Over 3.5"]
+        for bet in bets:
+            if match_market_name(bet.get("name",""), targets):
+                vals = bet.get("values") or []
+                # próbáljuk preferencia sorrendben keresni:
+                for wl in wanted_lines:
+                    for v in vals:
+                        if (v.get("value") or "").lower() == wl.lower():
+                            return (bname, wl, v.get("odd") or "")
+                # ha semmi preferált nincs, vegyük az első 'Over ...' értéket
+                for v in vals:
+                    if (v.get("value") or "").lower().startswith("over"):
+                        return (bname, v.get("value") or "Over", v.get("odd") or "")
+    elif market_kind == "NEXT_GOAL":
+        targets = ["next goal", "goal next", "team to score next"]
+        for bet in bets:
+            if match_market_name(bet.get("name",""), targets):
+                vals = bet.get("values") or []
+                # keressünk home/away vagy 1st/2nd team értékeket
+                for v in vals:
+                    val = (v.get("value") or "").lower()
+                    if any(k in val for k in ["home","away","team 1","team 2"]):
+                        return (bname, v.get("value") or "Next Goal", v.get("odd") or "")
+                if vals:
+                    v = vals[0]
+                    return (bname, v.get("value") or "Next Goal", v.get("odd") or "")
+    elif market_kind == "DNB":
+        targets = ["draw no bet", "dnb"]
+        for bet in bets:
+            if match_market_name(bet.get("name",""), targets):
+                vals = bet.get("values") or []
+                # preferáljuk a házi/vendég opciókat
+                for v in vals:
+                    val = (v.get("value") or "").lower()
+                    if "home" in val or "away" in val:
+                        return (bname, v.get("value") or "DNB", v.get("odd") or "")
+                if vals:
+                    v = vals[0]
+                    return (bname, v.get("value") or "DNB", v.get("odd") or "")
+
+    return None
 
 # --- Stat kulcs-fallback ---
 STAT_ALIASES = {
@@ -600,6 +722,15 @@ def log_event(row: dict):
             "market": row.get("market","")
         })
 
+def format_signal_message(s, odds_line: str):
+    return (
+        f"⚡ <b>{s['market'].replace('_',' ')} ALERT</b>\n"
+        f"🏟️ <b>Meccs</b>: {s['match']} ({s['score']}, {s['minute']}' )\n"
+        f"🏆 <b>Liga</b>: {s['league']}\n"
+        f"🎯 <b>Tipp</b>: {s['pick']}\n"
+        f"📈 <b>Esély</b>: {s['prob']}%{odds_line}\n"
+    )
+
 def main():
     if SEND_ONLINE_ON_START:
         send_message(f"✅ <b>LiveMesterBot (TEST) online</b>\n🕒 {now_str()}")
@@ -608,8 +739,7 @@ def main():
     already_sent_local = 0
 
     while True:
-        if stop_flag:
-            break
+        if stop_flag: break
 
         poll, max_fx = current_limits()
         if poll == 0:
@@ -663,21 +793,29 @@ def main():
         if signals:
             priority = {"LATE_GOAL":1, "NEXT_GOAL":2, "DNB":3, "OVER":4, "UNDER":5}
             signals.sort(key=lambda x: (priority.get(x["market"], 9), -x["prob"]))
+
             for s in signals:
                 if not can_send_more_today(already_sent_local, MAX_SIGNALS_PER_DAY):
                     debug_row(phase="SEND", fixture_id=s["fixture_id"], minute=s["minute"], reason="daily_cap_reached", metrics=f"MAX={MAX_SIGNALS_PER_DAY}")
                     continue
-                # --- Üzenet összeállítás (ODDS_MODE-ot figyelembe véve) ---
+
+                # --- Live odds hozzákötés (csak ha kérted: ODDS_MODE=shown és provider aktív) ---
                 odds_line = ""
-                if ODDS_MODE == "estimated" and ("odds" in s) and (s["odds"] is not None):
-                    odds_line = f"\n💰 <b>Odds</b>: {s['odds']}"
-                msg = (
-                    f"⚡ <b>{s['market'].replace('_',' ')} ALERT</b>\n"
-                    f"🏟️ <b>Meccs</b>: {s['match']} ({s['score']}, {s['minute']}' )\n"
-                    f"🏆 <b>Liga</b>: {s['league']}\n"
-                    f"🎯 <b>Tipp</b>: {s['pick']}\n"
-                    f"📈 <b>Esély</b>: {s['prob']}%{odds_line}\n"
-                )
+                if ODDS_MODE == "shown" and ODDS_PROVIDER == "api_football":
+                    odds_payload = fetch_live_odds_api_football(s["fixture_id"])
+                    picked = None
+                    # Piac-mapping a jelzés típusára
+                    kind = s["market"]
+                    mk = "OVER" if kind in ("OVER","UNDER") else kind
+                    picked = pick_odds_for_market(odds_payload, mk, ODDS_BOOKMAKER)
+                    if picked:
+                        bname, label, price = picked
+                        if price:
+                            odds_line = f"\n💰 <b>Odds</b>: {price} ({bname} – {label})"
+                        else:
+                            odds_line = ""  # nincs korrekt ár -> ne írjuk ki
+
+                msg = format_signal_message(s, odds_line)
                 send_message(msg)
                 log_event(s)
                 already_sent_local += 1
@@ -688,11 +826,9 @@ def main():
             break
 
         for _ in range(int(max(1, poll))):
-            if stop_flag:
-                break
+            if stop_flag: break
             time.sleep(1)
-        if stop_flag:
-            break
+        if stop_flag: break
 
 if __name__ == "__main__":
     main()
