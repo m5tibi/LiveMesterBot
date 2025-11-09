@@ -16,7 +16,6 @@ TIMEZONE = os.getenv("TIMEZONE", "Europe/Budapest")
 tz = pytz.timezone(TIMEZONE)
 
 TELEGRAM_BOT_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
-# /summary ideiglenes célja (privát), egyébként a csatorna
 TELEGRAM_CHAT_ID   = (os.getenv("_TMP_SUMMARY_CHAT") or os.getenv("TELEGRAM_CHAT_ID") or "").strip()
 
 RAPIDAPI_KEY  = (os.getenv("RAPIDAPI_KEY") or "").strip()
@@ -32,11 +31,6 @@ def today_date_str():
     return datetime.now(tz).strftime("%Y-%m-%d")
 
 def read_events_for_date(datestr: str):
-    """
-    A napi events.csv betöltése.
-    Elsőként: data/YYYY-MM-DD/events.csv
-    Másodsorban: logs/events.csv (fallback)
-    """
     candidates = [f"data/{datestr}/events.csv", "logs/events.csv"]
     for path in candidates:
         if os.path.exists(path):
@@ -49,14 +43,9 @@ def read_events_for_date(datestr: str):
     return [], None
 
 def pick_to_bucket(pick: str) -> str:
-    # "Over 2.5 (live)" -> "Over 2.5" ; "Home Over 1.5 (live)" -> "Home Over 1.5"
     return re.sub(r"\s*\(live\)\s*$", "", pick or "").strip()
 
 def dedup_events(rows):
-    """
-    Deduplikálás kulcson: (fixture_id, market, pick_bucket)
-    időrendben az ELSŐ előfordulás marad.
-    """
     def parse_time(s):
         try: return datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
         except: return datetime.min
@@ -73,17 +62,12 @@ def dedup_events(rows):
         out.append(r)
     return out
 
-# ------------------------------
-# API-Football lekérdezések
-# ------------------------------
-
 def _get(path, params, timeout=15):
     if not RAPIDAPI_KEY:
         return None
     try:
         r = requests.get(f"{BASE_URL}/{path}", headers=HEADERS, params=params, timeout=timeout)
         if r.status_code == 429:
-            # rate limitnél próbáljunk kicsit hátrébb lépni
             time.sleep(2.0)
             r = requests.get(f"{BASE_URL}/{path}", headers=HEADERS, params=params, timeout=timeout)
         if r.status_code != 200:
@@ -93,9 +77,6 @@ def _get(path, params, timeout=15):
         return None
 
 def fetch_fixture_final(fid: str):
-    """
-    Meccs végállapota + gólszámok.
-    """
     resp = _get("fixtures", {"id": fid})
     if not resp:
         return None
@@ -105,10 +86,6 @@ def fetch_fixture_final(fid: str):
     return {"status": status, "home": int(g.get("home") or 0), "away": int(g.get("away") or 0)}
 
 def fetch_fixture_corners_final(fid: str):
-    """
-    Kész meccs végső szögletszáma (home+away).
-    A fixtures/statistics végpontból olvassuk ki a "Corner Kicks"-et, és összegezzük.
-    """
     resp = _get("fixtures/statistics", {"fixture": fid})
     if not resp:
         return None
@@ -131,13 +108,9 @@ def fetch_fixture_corners_final(fid: str):
     except Exception:
         return None
 
-# ------------------------------
-# Kiértékelések (OVER / BTTS / TEAM_OVER / CORNERS)
-# ------------------------------
-
 OVER_RE   = re.compile(r"^over\s+(\d+(?:\.\d+)?)$", re.IGNORECASE)
 TEAM_OVR  = re.compile(r"^(home|away)\s+over\s+(\d+(?:\.\d+)?)$", re.IGNORECASE)
-CORN_OVR  = re.compile(r"^over\s+(\d+(?:\.\d+)?)$", re.IGNORECASE)  # a CORNERS pick_bucket "Over X.5" formájú
+CORN_OVR  = re.compile(r"^over\s+(\d+(?:\.\d+)?)$", re.IGNORECASE)
 
 def eval_over(fi, pick_bucket: str):
     m = OVER_RE.match(pick_bucket or "")
@@ -174,25 +147,16 @@ def eval_team_over(fi, pick_bucket: str):
     return "win" if goals > line else "loss"
 
 def eval_corners(fid: str, pick_bucket: str):
-    """
-    Corners Over X.5 → total_corners > X.5
-    A szögletszámot a fixtures/statistics-ból olvassuk (Corner Kicks).
-    """
     m = CORN_OVR.match(pick_bucket or "")
     if not m:
         return "unsupported"
     line = float(m.group(1))
     total = fetch_fixture_corners_final(fid)
     if total is None:
-        # nincs végső szögletadat → várjunk
         return "pending"
     return "win" if total > line else "loss"
 
 def evaluate_rows(rows):
-    """
-    rows: deduplikált jelzések
-    """
-    # Először csak az OVER/BTTS/TEAM_OVER miatt kérjük le a végállapotot, hogy minimalizáljuk a hívásokat.
     by_fixture = defaultdict(list)
     for r in rows:
         by_fixture[str(r.get("fixture_id","")).strip()].append(r)
@@ -215,7 +179,6 @@ def evaluate_rows(rows):
         elif market == "TEAM_OVER":
             outcome = eval_team_over(fixture_outcomes.get(fid), pb)
         elif market == "CORNERS":
-            # Cornersnél külön az összesített sarokrúgás számít
             outcome = eval_corners(fid, pb)
         else:
             outcome = "pending"
@@ -279,9 +242,7 @@ def send_telegram(text: str):
         return False
 
 def main():
-    # Ha a workflow ad SUMMARY_DATE-et (pl. tegnap), azt használjuk; különben ma.
     date_str = os.getenv("SUMMARY_DATE") or today_date_str()
-
     rows, src = read_events_for_date(date_str)
     if not rows:
         send_telegram(f"🧾 <b>Napi összesítő – {date_str}</b>\nMa nem keletkezett napló (nincs data).")
@@ -292,7 +253,6 @@ def main():
 
     send_telegram(format_summary_message(date_str, stats))
 
-    # Debug napló
     try:
         os.makedirs("logs", exist_ok=True)
         with open("logs/summary_debug.txt", "a", encoding="utf-8") as f:
