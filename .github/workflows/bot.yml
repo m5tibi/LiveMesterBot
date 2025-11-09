@@ -1,13 +1,17 @@
 name: LiveMesterBot
 
 on:
+  # Csak kézi indítás (Actions > LiveMesterBot > Run workflow)
   workflow_dispatch:
-  schedule:
-    # NAPPALI BOT – csak 05:00–23:00 (BUD) között 10 percenként
-    # BUD = UTC+1 (november), ezért 04–22 UTC.
-    - cron: "*/10 4-21 * * *"
-    # REGGELI ÖSSZEGZŐ – minden nap 06:05 (BUD) → 05:05 UTC
-    - cron: "5 5 * * *"
+    inputs:
+      job:
+        description: "Melyik feladat fusson?"
+        required: true
+        default: live
+        type: choice
+        options:
+          - live
+          - summary
 
 concurrency:
   group: livemesterbot
@@ -15,10 +19,10 @@ concurrency:
 
 jobs:
   # ===========================
-  # 1) NAPPALI LIVE BOT FUTÁS
+  # 1) NAPPALI LIVE BOT (kézi)
   # ===========================
   run:
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '*/10 4-21 * * *'
+    if: ${{ github.event.inputs.job == 'live' }}
     runs-on: ubuntu-latest
     timeout-minutes: 12
     permissions:
@@ -49,12 +53,12 @@ jobs:
       ENABLE_LATE_GOAL: "1"
       ENABLE_UNDER:     "0"
 
-      # ÚJ PIACOK
+      # ÚJ piacok
       ENABLE_BTTS: "1"
       ENABLE_TEAM_OVER: "1"
       ENABLE_CORNERS: "1"
 
-      # Küszöbök (opcionálisan finomhangolhatók)
+      # Küszöbök
       OVER_MINUTE_START: "42"
       OVER_HARD_STOP:    "88"
       OVER_XG_SUM:       "1.20"
@@ -105,7 +109,7 @@ jobs:
       BACKOFF_MAX_SEC: "60"
 
       # Odds megjelenítés + minimumok
-      ODDS_MODE: "shown"        # shown | none
+      ODDS_MODE: "shown"
       ODDS_BOOKMAKER: "bet365"
       OVER_MIN_ODDS: "1.25"
       BTTS_MIN_ODDS: "1.25"
@@ -115,42 +119,24 @@ jobs:
       SUMMARY_CMD_WINDOW_SEC: "120"
 
     steps:
-      # Védő lépés: ha mégis az ablakon kívül indul, lépjen ki azonnal.
-      - name: Check active window (Budapest time)
-        id: timecheck
-        run: |
-          H=$(TZ=Europe/Budapest date +%H)
-          M=$(TZ=Europe/Budapest date +%M)
-          if [ "$H" -ge 5 ] && [ "$H" -lt 23 ]; then
-            echo "within=true" >> "$GITHUB_OUTPUT"
-            echo "Within active window: $H:$M (BUD)"
-          else
-            echo "within=false" >> "$GITHUB_OUTPUT"
-            echo "Outside active window: $H:$M (BUD) → exit 0"
-          fi
-
       - name: Checkout repository
-        if: steps.timecheck.outputs.within == 'true'
         uses: actions/checkout@v4
 
       - name: Set up Python
-        if: steps.timecheck.outputs.within == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install dependencies
-        if: steps.timecheck.outputs.within == 'true'
         run: |
           pip install -r requirements.txt
 
       - name: Run LiveMesterBot
-        if: steps.timecheck.outputs.within == 'true'
         run: |
           python livemesterbot.py
 
       - name: Persist today's events into data/YYYY-MM-DD
-        if: always() && steps.timecheck.outputs.within == 'true'
+        if: always()
         run: |
           set -e
           if [ -f logs/events.csv ]; then
@@ -171,7 +157,7 @@ jobs:
           fi
 
       - name: Upload logs artifact
-        if: always() && steps.timecheck.outputs.within == 'true'
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: logs-${{ github.run_id }}
@@ -181,10 +167,10 @@ jobs:
           retention-days: 3
 
   # ===========================
-  # 2) REGGELI NAPI ÖSSZEGZŐ
+  # 2) NAPI ÖSSZEGZŐ (kézi)
   # ===========================
   daily-summary:
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '5 5 * * *'
+    if: ${{ github.event.inputs.job == 'summary' }}
     runs-on: ubuntu-latest
     timeout-minutes: 8
     env:
@@ -207,11 +193,8 @@ jobs:
         run: |
           pip install -r requirements.txt
 
-      - name: Run daily summary for YESTERDAY (Budapest)
-        env:
-          SUMMARY_DATE: ${{ env.SUMMARY_DATE }}
+      - name: Run daily summary (yesterday, BUD time)
         run: |
-          # SUMMARY_DATE = tegnapi nap (BUD időzóna)
           export SUMMARY_DATE=$(TZ=Europe/Budapest date -d "yesterday" +%F)
           echo "SUMMARY_DATE=${SUMMARY_DATE}"
           python daily_summary.py
