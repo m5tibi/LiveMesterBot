@@ -79,10 +79,10 @@ LATE_SHOTS_SUM    = int(os.getenv("LATE_SHOTS_SUM","9"))
 LATE_DA_RUN       = int(os.getenv("LATE_DA_RUN","10"))
 LATE_REQUIRE_XG   = os.getenv("LATE_REQUIRE_XG","0") == "1"
 
-# --- ÚJ: BTTS/TEAM OVER/CORNERS küszöbök (óvatos defaultok) ---
+# --- ÚJ: BTTS/TEAM OVER/CORNERS küszöbök ---
 BTTS_MINUTE_START  = int(os.getenv("BTTS_MINUTE_START","30"))
-BTTS_MIN_SOT_EACH  = int(os.getenv("BTTS_MIN_SOT_EACH","2"))    # mindkét oldalon SOT>=2
-BTTS_MIN_XG_EACH   = float(os.getenv("BTTS_MIN_XG_EACH","0.4")) # mindkét oldalon xG>=0.4 (ha xG elérhető)
+BTTS_MIN_SOT_EACH  = int(os.getenv("BTTS_MIN_SOT_EACH","2"))
+BTTS_MIN_XG_EACH   = float(os.getenv("BTTS_MIN_XG_EACH","0.4"))
 BTTS_REQUIRE_XG    = os.getenv("BTTS_REQUIRE_XG","0") == "1"
 
 TEAM_OVER_MINUTE_START = int(os.getenv("TEAM_OVER_MINUTE_START","40"))
@@ -90,7 +90,7 @@ TEAM_OVER_XG_DIFF      = float(os.getenv("TEAM_OVER_XG_DIFF","0.6"))
 TEAM_OVER_DA_RATIO     = float(os.getenv("TEAM_OVER_DA_RATIO","1.5"))
 
 CORNERS_MINUTE_START   = int(os.getenv("CORNERS_MINUTE_START","35"))
-CORNERS_MIN_DA_SUM     = int(os.getenv("CORNERS_MIN_DA_SUM","20")) # veszélyes támadások összege
+CORNERS_MIN_DA_SUM     = int(os.getenv("CORNERS_MIN_DA_SUM","20"))
 CORNERS_MIN_SHOTS_SUM  = int(os.getenv("CORNERS_MIN_SHOTS_SUM","12"))
 
 # --- Deduplikáció / cooldown ---
@@ -105,7 +105,7 @@ ODDS_PROVIDER = os.getenv("ODDS_PROVIDER","api_football").strip().lower()  # api
 ODDS_MODE     = os.getenv("ODDS_MODE","none").strip().lower()              # none | shown
 ODDS_BOOKMAKER= (os.getenv("ODDS_BOOKMAKER","bet365") or "").strip().lower()
 
-OVER_MIN_ODDS     = float(os.getenv("OVER_MIN_ODDS","0"))     # 0 → ki
+OVER_MIN_ODDS     = float(os.getenv("OVER_MIN_ODDS","0"))
 BTTS_MIN_ODDS     = float(os.getenv("BTTS_MIN_ODDS","0"))
 TEAM_OVER_MIN_ODDS= float(os.getenv("TEAM_OVER_MIN_ODDS","0"))
 CORNERS_MIN_ODDS  = float(os.getenv("CORNERS_MIN_ODDS","0"))
@@ -412,13 +412,11 @@ def pick_odds_for_market(odds_payload, market_kind: str, preferred_book: str,
                         return (bname, "BTTS Yes", v.get("odd") or "")
 
     elif market_kind == "TEAM_OVER":
-        # Külön "Team Totals" / "Home Team Total Goals" / "Away Team Total Goals"
         targets = ["team totals", "team total goals", "home team total", "away team total"]
         preferred_prefix = "Home" if (team_side == "home") else "Away" if (team_side == "away") else None
         for bet in bets:
             if match_market_name(bet.get("name",""), targets):
                 vals = bet.get("values") or []
-                # Próbáljuk a megfelelő oldalt és az "Over X.5"-öt
                 best = None
                 for v in vals:
                     val = (v.get("value") or "")
@@ -588,7 +586,6 @@ def allow_signal(fid, market, side_or_kind, minute, pick_bucket=None, score_str=
             prev_score  = prev.get("last_score")
             if prev_bucket == pick_bucket and prev_score == score_str:
                 return False
-            # vonal-emelkedés vizsgálata azonos score mellett a vonalas piacokon
             market_u = str(market).upper()
             if prev_score == score_str and market_u in ("OVER","TEAM_OVER","CORNERS"):
                 cur_line  = over_line_value(pick_bucket) or -1
@@ -596,7 +593,6 @@ def allow_signal(fid, market, side_or_kind, minute, pick_bucket=None, score_str=
                 if cur_line <= prev_line:
                     return False
 
-    # Intra-run védelem
     if (now_t - last_signal_time.get(fid, 0)) < SIGNAL_COOLDOWN_MIN*60:
         return False
     if (now_t - last_market_time.get((fid, market), 0)) < MARKET_COOLDOWN_MIN*60:
@@ -606,7 +602,6 @@ def allow_signal(fid, market, side_or_kind, minute, pick_bucket=None, score_str=
     if h in sent_hashes:
         return False
 
-    # Engedélyezve → frissítések
     last_signal_time[fid] = now_t
     last_market_time[(fid, market)] = now_t
     sent_hashes.add(h)
@@ -701,7 +696,6 @@ def choose_over_label(minute, total_goals, xg_sum, shots_sum):
 
 # --- Team Over és Corners vonalválasztók (egyszerű heurisztika) ---
 def choose_team_over_label(minute, team_goals, xg_team, da_ratio):
-    # Ha erős dominancia és kevés gól: jöhet magasabb vonal
     if minute < 60:
         if team_goals >= 2: return "Over 2.5"
         if team_goals == 1: return "Over 1.5" if (xg_team or 0) >= 0.8 or da_ratio >= 1.6 else "Over 0.5"
@@ -723,9 +717,7 @@ def choose_corners_over_label(minute, corners_total, shots_sum, da_sum):
         base = 8.5 if shots_sum >= 18 or da_sum >= 40 else 7.5
     else:
         base = 9.5 if shots_sum >= 22 or da_sum >= 50 else 8.5
-    # ne legyen kisebb, mint eddigi + 0.5
     target = max(base, corners_total + 0.5)
-    # kerekítsük .5-re
     half = int(target)
     if target - half < 0.5: target = half + 0.5
     else: target = half + 0.5
@@ -871,7 +863,8 @@ def gen_over(fx, stats):
     return []
 
 def gen_btts(fx, stats):
-    if not ENABLE_BTTS: return []
+    if not ENABLE_BTTS: 
+        return []
     fixture = fx.get("fixture", {})
     teams   = fx.get("teams", {})
     goals   = fx.get("goals", {})
@@ -881,8 +874,13 @@ def gen_btts(fx, stats):
         return []
 
     home = teams.get("home",{}).get("name","Home"); away = teams.get("away",{}).get("name","Away")
-    hg = goals.get("home",0) or 0; ag = goals.get("away",0) or 0
+    hg = int(goals.get("home",0) or 0)
+    ag = int(goals.get("away",0) or 0)
     fid = fixture.get("id")
+
+    # 🔒 Ne küldjünk BTTS Yes-t, ha már mindkét csapat szerzett gólt
+    if hg >= 1 and ag >= 1:
+        return []
 
     if ENABLE_RED_CARD_FILTER and red_card_for_fixture(fid):
         return []
@@ -899,7 +897,6 @@ def gen_btts(fx, stats):
     cond_xg  = True if (hxg is None or axg is None) else (hxg >= BTTS_MIN_XG_EACH and axg >= BTTS_MIN_XG_EACH)
 
     if cond_sot and cond_xg:
-        # Belső esély (nem írjuk ki)
         s_factor = clamp((min(hs_on, as_on)-BTTS_MIN_SOT_EACH)/3.0, 0.0, 1.0)
         x_factor = clamp(((hxg or 0)+(axg or 0))/ (2*BTTS_MIN_XG_EACH+1e-9), 0.0, 2.0)/2.0 if (hxg is not None and axg is not None) else 0.5
         t_factor = minute_norm_descending(minute, 30, 95)
@@ -916,7 +913,11 @@ def gen_btts(fx, stats):
             "odds":None,
             "fixture_id":fid,
             "side":"btts",
-            "details":{"sot_home":hs_on,"sot_away":as_on,"xg_home":(None if hxg is None else round(hxg,2)),"xg_away":(None if axg is None else round(axg,2))}
+            "details":{
+                "sot_home":hs_on,"sot_away":as_on,
+                "xg_home":(None if hxg is None else round(hxg,2)),
+                "xg_away":(None if axg is None else round(axg,2))
+            }
         }]
     return []
 
@@ -946,7 +947,6 @@ def gen_team_over(fx, stats):
     xg_diff = (hxg or 0) - (axg or 0) if (hxg is not None and axg is not None) else None
 
     out=[]
-    # hazai dominancia
     if dom >= TEAM_OVER_DA_RATIO and ((xg_diff is None) or (xg_diff >= TEAM_OVER_XG_DIFF)):
         label = choose_team_over_label(minute, hg, (hxg or 0), dom)
         out.append({
@@ -963,7 +963,6 @@ def gen_team_over(fx, stats):
             "desired_label": f"Home {label}",
             "details":{"da_ratio":round(dom,2),"xg_diff":(None if xg_diff is None else round(xg_diff,2))}
         })
-    # vendég dominancia
     if (1/dom) >= TEAM_OVER_DA_RATIO and ((xg_diff is None) or ((-xg_diff) >= TEAM_OVER_XG_DIFF)):
         label = choose_team_over_label(minute, ag, (axg or 0), 1/dom if dom>0 else 0)
         out.append({
@@ -994,7 +993,6 @@ def gen_corners(fx, stats):
     home = teams.get("home",{}).get("name","Home"); away = teams.get("away",{}).get("name","Away")
     fid = fixture.get("id")
 
-    # Szögletek (ha csapatonként elérhető, összegezzük)
     hc = extract_stat(stats, home, "Corner Kicks") or 0
     ac = extract_stat(stats, away, "Corner Kicks") or 0
     corners_total = int(hc + ac)
@@ -1016,7 +1014,7 @@ def gen_corners(fx, stats):
             "league":f"{league.get('country','')} {league.get('name','')}",
             "match":f"{home} – {away}",
             "minute":minute,
-            "score":f"{int(hc)}:{int(ac)}",  # info: corners home:away
+            "score":f"{int(hc)}:{int(ac)}",
             "pick":f"{label} (live)",
             "prob":0,
             "odds":None,
@@ -1122,9 +1120,9 @@ def merge_signals(fx, stats):
     out = []
     out += gen_next_goal(fx, stats)
     out += gen_over(fx, stats)
-    out += gen_btts(fx, stats)          # ÚJ
-    out += gen_team_over(fx, stats)     # ÚJ
-    out += gen_corners(fx, stats)       # ÚJ
+    out += gen_btts(fx, stats)          # BTTS javítva
+    out += gen_team_over(fx, stats)
+    out += gen_corners(fx, stats)
     out += gen_dnb(fx, stats)
     out += gen_late_goal(fx, stats)
     return out
@@ -1153,7 +1151,6 @@ def log_event(row: dict):
         })
 
 def format_signal_message(s, odds_line: str):
-    # Esély %-ot nem írjuk ki
     return (
         f"⚡ <b>{s['market'].replace('_',' ')}</b>\n"
         f"🏟️ <b>Meccs</b>: {s['match']} ({s['score']}, {s['minute']}' )\n"
@@ -1162,7 +1159,7 @@ def format_signal_message(s, odds_line: str):
     )
 
 def main():
-    # Napi állapot előtöltés (score-érzékeny dedup)
+    # Napi állapot előtöltés
     preload_sent_keys_today()
 
     # /summary kezelés
@@ -1177,8 +1174,12 @@ def main():
     while True:
         if stop_flag: break
 
+        # --- Konzolos státusz röviden ---
+        print(f"[{now_str()}] 🔄 ciklus indul...")
+
         poll, max_fx = current_limits()
         if poll == 0:
+            print("   ⏸ aktív ablakon kívül vagyunk – várakozás 60 mp")
             time.sleep(60)
             if RUN_MINUTES > 0 and (time.time() - start_time) >= RUN_MINUTES * 60:
                 break
@@ -1186,13 +1187,16 @@ def main():
 
         fixtures, err = fetch_live_fixtures()
         if fixtures is None and err:
+            print(f"   ⚠️ fixtures API hiba: {err}")
             debug_row(phase="FETCH_FIX", fixture_id="", minute="", reason="api_error", metrics=str(err))
         elif fixtures is not None:
+            print(f"   ✅ {len(fixtures)} élő meccs lekérve")
             debug_row(phase="FETCH_FIX", fixture_id="", minute="", reason="ok", metrics=f"fixtures={len(fixtures)}")
 
         fixtures_with_stats = []
         if fixtures:
             chosen = select_top_fixtures(fixtures, max_fx)
+            print(f"   🔎 kiválasztva: {len(chosen)}/{len(fixtures)} (limit {max_fx})")
             debug_row(phase="SELECT", fixture_id="", minute="", reason="chosen", metrics=f"{len(chosen)}/{len(fixtures)} selected (limit {max_fx})")
             for fx in chosen:
                 if stop_flag: break
@@ -1228,8 +1232,8 @@ def main():
                 else:
                     debug_row(phase="ALLOW", fixture_id=fid, minute=minute, reason="cooldown_or_state_block", metrics=f"{market}/{pick_bucket}")
 
+        print(f"   📈 jelek száma: {len(signals)}")
         if signals:
-            # Prioritás: gondoljuk át – hagyjuk a késői marketeket előre
             priority = {"LATE_GOAL":1, "NEXT_GOAL":2, "TEAM_OVER":3, "BTTS":4, "OVER":5, "CORNERS":6, "DNB":7, "UNDER":8}
             signals.sort(key=lambda x: (priority.get(x["market"], 9)))
 
@@ -1247,7 +1251,6 @@ def main():
                     picked = pick_odds_for_market(odds_payload, mk, ODDS_BOOKMAKER, desired_over_label=desired, team_side=team_side)
                     if picked:
                         bname, label, price = picked
-                        # minimum odds szűrés piacfüggően
                         try:
                             if mk == "OVER" and OVER_MIN_ODDS > 0 and price and float(price) < OVER_MIN_ODDS:
                                 debug_row(phase="SEND", fixture_id=s["fixture_id"], minute=s["minute"], reason="over_min_odds_block", metrics=f"{price} < {OVER_MIN_ODDS}")
@@ -1267,15 +1270,18 @@ def main():
                             odds_line = f"\n💰 <b>Odds</b>: {price} ({bname} – {label})"
 
                 msg = format_signal_message(s, odds_line)
+                print(f"   📤 küldés: {s['market']} | {s['match']} | {s['pick']}")
                 send_message(msg)
                 log_event(s)
                 already_sent_local += 1
         else:
-            debug_row(phase="SIGNALS", fixture_id="", minute="", reason="none_after_eval", metrics=f"fx_stats={len(fixtures_with_stats)}")
+            print("   💤 nincs erős jel ebben a ciklusban")
 
         if RUN_MINUTES > 0 and (time.time() - start_time) >= RUN_MINUTES * 60:
+            print("   ⏹ időkorlát elérve – futás vége")
             break
 
+        print(f"   ⏳ alvás {poll}s\n")
         for _ in range(int(max(1, poll))):
             if stop_flag: break
             time.sleep(1)
