@@ -12,3 +12,5 @@ time,league,match,minute,score,pick,prob,odds,fixture_id,details,market
 2025-11-09 07:52:48,Japan J1 League,Kyoto Sanga – Yokohama F. Marinos,87,0:2,BTTS Yes,68.5,,1324309,"{'sot_home': 8.0, 'sot_away': 5.0, 'xg_home': None, 'xg_away': None}",BTTS
 2025-11-09 08:03:03,Japan J1 League,Kyoto Sanga – Yokohama F. Marinos,90,0:3,BTTS Yes,68.1,,1324309,"{'sot_home': 8.0, 'sot_away': 6.0, 'xg_home': None, 'xg_away': None}",BTTS
 2025-11-09 08:03:04,Japan J1 League,Shimizu S-pulse – Cerezo Osaka,45,0:3,BTTS Yes,68.4,,1324308,"{'sot_home': 3.0, 'sot_away': 5.0, 'xg_home': None, 'xg_away': None}",BTTS
+2025-11-09 08:21:55,Australia A-League,Brisbane Roar – Newcastle Jets,61,1:0,Over 1.5 (live),66.2,,1469578,"{'xg_sum': None, 'shots_sum': 10.0}",OVER
+2025-11-09 08:21:55,Japan J1 League,Shimizu S-pulse – Cerezo Osaka,59,0:3,Over 3.5 (live),70.8,,1324308,"{'xg_sum': None, 'shots_sum': 13.0}",OVER
