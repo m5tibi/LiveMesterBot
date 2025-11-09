@@ -3,25 +3,30 @@ name: LiveMesterBot
 on:
   workflow_dispatch:
   schedule:
-    # Csak 05:00–23:00 (BUD) között induljon 10 percenként.
-    # Novemberben BUD = UTC+1, ezért 04–22 UTC a megfelelő ablak.
+    # NAPPALI BOT – csak 05:00–23:00 (BUD) között 10 percenként
+    # BUD = UTC+1 (november), ezért 04–22 UTC.
     - cron: "*/10 4-21 * * *"
+    # REGGELI ÖSSZEGZŐ – minden nap 06:05 (BUD) → 05:05 UTC
+    - cron: "5 5 * * *"
 
 concurrency:
   group: livemesterbot
   cancel-in-progress: true
 
 jobs:
+  # ===========================
+  # 1) NAPPALI LIVE BOT FUTÁS
+  # ===========================
   run:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '*/10 4-21 * * *'
     runs-on: ubuntu-latest
     timeout-minutes: 12
     permissions:
       contents: write
-
     env:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: "-1002780259470"
-      TELEGRAM_ADMIN_CHAT_ID: "1326707238"
+      TELEGRAM_ADMIN_CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_CHAT_ID }}
 
       RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
       RAPIDAPI_HOST: "api-football-v1.p.rapidapi.com"
@@ -36,7 +41,6 @@ jobs:
       PEAK_POLL_SECONDS: "120"
       MAX_FIXTURES_PER_CYCLE: "12"
       PEAK_MAX_FIXTURES_PER_CYCLE: "16"
-
       RUN_MINUTES: "8"
 
       ENABLE_NEXT_GOAL: "1"
@@ -45,6 +49,12 @@ jobs:
       ENABLE_LATE_GOAL: "1"
       ENABLE_UNDER:     "0"
 
+      # ÚJ PIACOK
+      ENABLE_BTTS: "1"
+      ENABLE_TEAM_OVER: "1"
+      ENABLE_CORNERS: "1"
+
+      # Küszöbök (opcionálisan finomhangolhatók)
       OVER_MINUTE_START: "42"
       OVER_HARD_STOP:    "88"
       OVER_XG_SUM:       "1.20"
@@ -67,6 +77,22 @@ jobs:
       DNB_XG: "1.25"
       DNB_REQUIRE_XG: "0"
 
+      # BTTS
+      BTTS_MINUTE_START: "30"
+      BTTS_MIN_SOT_EACH: "2"
+      BTTS_MIN_XG_EACH:  "0.4"
+      BTTS_REQUIRE_XG:   "0"
+
+      # TEAM OVER
+      TEAM_OVER_MINUTE_START: "40"
+      TEAM_OVER_XG_DIFF:      "0.6"
+      TEAM_OVER_DA_RATIO:     "1.5"
+
+      # CORNERS
+      CORNERS_MINUTE_START:  "35"
+      CORNERS_MIN_DA_SUM:    "20"
+      CORNERS_MIN_SHOTS_SUM: "12"
+
       SIGNAL_COOLDOWN_MIN: "7"
       MARKET_COOLDOWN_MIN: "10"
       STATS_COOLDOWN_MIN: "5"
@@ -78,14 +104,18 @@ jobs:
       DEBUG_LOG: "1"
       BACKOFF_MAX_SEC: "60"
 
-      ODDS_MODE: "shown"
+      # Odds megjelenítés + minimumok
+      ODDS_MODE: "shown"        # shown | none
       ODDS_BOOKMAKER: "bet365"
       OVER_MIN_ODDS: "1.25"
+      BTTS_MIN_ODDS: "1.25"
+      TEAM_OVER_MIN_ODDS: "1.25"
+      CORNERS_MIN_ODDS: "1.25"
 
       SUMMARY_CMD_WINDOW_SEC: "120"
 
     steps:
-      # VÉDŐ LÉPÉS: ha mégis időablakon kívül indulna (pl. kézi), azonnal kilépünk.
+      # Védő lépés: ha mégis az ablakon kívül indul, lépjen ki azonnal.
       - name: Check active window (Budapest time)
         id: timecheck
         run: |
@@ -149,3 +179,39 @@ jobs:
             logs/**
           if-no-files-found: ignore
           retention-days: 3
+
+  # ===========================
+  # 2) REGGELI NAPI ÖSSZEGZŐ
+  # ===========================
+  daily-summary:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '5 5 * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: "-1002780259470"
+      RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
+      RAPIDAPI_HOST: "api-football-v1.p.rapidapi.com"
+      TIMEZONE: "Europe/Budapest"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run daily summary for YESTERDAY (Budapest)
+        env:
+          SUMMARY_DATE: ${{ env.SUMMARY_DATE }}
+        run: |
+          # SUMMARY_DATE = tegnapi nap (BUD időzóna)
+          export SUMMARY_DATE=$(TZ=Europe/Budapest date -d "yesterday" +%F)
+          echo "SUMMARY_DATE=${SUMMARY_DATE}"
+          python daily_summary.py
