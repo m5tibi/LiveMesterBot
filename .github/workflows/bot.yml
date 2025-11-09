@@ -3,8 +3,9 @@ name: LiveMesterBot
 on:
   workflow_dispatch:
   schedule:
-    # 10 percenként indul (UTC).
-    - cron: "*/10 * * * *"
+    # Csak 05:00–23:00 (BUD) között induljon 10 percenként.
+    # Novemberben BUD = UTC+1, ezért 04–22 UTC a megfelelő ablak.
+    - cron: "*/10 4-21 * * *"
 
 concurrency:
   group: livemesterbot
@@ -15,22 +16,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 12
     permissions:
-      contents: write   # kell a git commit/push-hoz a napi data/ perzisztálásnál
+      contents: write
 
     env:
-      # --- Kötelező kulcsok (Secrets-ben tárolva) ---
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-
-      # Tippek célcsatornája: t.me/livemester → pl. -1002780259470
       TELEGRAM_CHAT_ID: "-1002780259470"
-
-      # Admin privát chat ID – csak innen fogadjuk a /summary parancsot
       TELEGRAM_ADMIN_CHAT_ID: "1326707238"
 
       RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
       RAPIDAPI_HOST: "api-football-v1.p.rapidapi.com"
 
-      # --- Üzemidő / gyakoriság / limit ---
       TIMEZONE: "Europe/Budapest"
       ACTIVE_HOURS_START: "05:00"
       ACTIVE_HOURS_END:   "23:00"
@@ -44,7 +39,6 @@ jobs:
 
       RUN_MINUTES: "8"
 
-      # --- Piac-kapcsolók és küszöbök ---
       ENABLE_NEXT_GOAL: "1"
       ENABLE_OVER:      "1"
       ENABLE_DNB:       "1"
@@ -79,39 +73,54 @@ jobs:
       MAX_SIGNALS_PER_DAY: "60"
       ENABLE_RED_CARD_FILTER: "1"
 
-      # --- Üzenetküldés / debug ---
       MUTE_NO_SIGNAL: "1"
       SEND_ONLINE_ON_START: "0"
       DEBUG_LOG: "1"
       BACKOFF_MAX_SEC: "60"
 
-      # --- ODDS beállítások ---
-      ODDS_MODE: "shown"        # élő odds lekérés
-      ODDS_BOOKMAKER: "bet365"  # preferált bukméker (opcionális)
-      OVER_MIN_ODDS: "1.25"     # ez alatti Over árnál NEM küld jelzést
+      ODDS_MODE: "shown"
+      ODDS_BOOKMAKER: "bet365"
+      OVER_MIN_ODDS: "1.25"
 
-      # --- /summary frissesség-ablak (mp) – csak friss parancs fusson ---
       SUMMARY_CMD_WINDOW_SEC: "120"
 
     steps:
+      # VÉDŐ LÉPÉS: ha mégis időablakon kívül indulna (pl. kézi), azonnal kilépünk.
+      - name: Check active window (Budapest time)
+        id: timecheck
+        run: |
+          H=$(TZ=Europe/Budapest date +%H)
+          M=$(TZ=Europe/Budapest date +%M)
+          if [ "$H" -ge 5 ] && [ "$H" -lt 23 ]; then
+            echo "within=true" >> "$GITHUB_OUTPUT"
+            echo "Within active window: $H:$M (BUD)"
+          else
+            echo "within=false" >> "$GITHUB_OUTPUT"
+            echo "Outside active window: $H:$M (BUD) → exit 0"
+          fi
+
       - name: Checkout repository
+        if: steps.timecheck.outputs.within == 'true'
         uses: actions/checkout@v4
 
       - name: Set up Python
+        if: steps.timecheck.outputs.within == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install dependencies
+        if: steps.timecheck.outputs.within == 'true'
         run: |
           pip install -r requirements.txt
 
       - name: Run LiveMesterBot
+        if: steps.timecheck.outputs.within == 'true'
         run: |
           python livemesterbot.py
 
       - name: Persist today's events into data/YYYY-MM-DD
-        if: always()
+        if: always() && steps.timecheck.outputs.within == 'true'
         run: |
           set -e
           if [ -f logs/events.csv ]; then
@@ -132,7 +141,7 @@ jobs:
           fi
 
       - name: Upload logs artifact
-        if: always()
+        if: always() && steps.timecheck.outputs.within == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: logs-${{ github.run_id }}
