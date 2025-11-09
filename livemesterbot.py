@@ -20,10 +20,8 @@ load_dotenv()
 
 # --- ENV (általános) ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN","").strip()
-# Tippek ide mennek (csatorna)
-TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID","").strip()
-# /summary csak innen fogadott (admin privát chat ID)
-TELEGRAM_ADMIN_CHAT_ID = os.getenv("TELEGRAM_ADMIN_CHAT_ID","").strip()
+TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID","").strip()          # csatorna
+TELEGRAM_ADMIN_CHAT_ID = os.getenv("TELEGRAM_ADMIN_CHAT_ID","").strip() # /summary privát
 
 RAPIDAPI_KEY  = os.getenv("RAPIDAPI_KEY","").strip()
 RAPIDAPI_HOST = os.getenv("RAPIDAPI_HOST","api-football-v1.p.rapidapi.com").strip()
@@ -53,19 +51,22 @@ ENABLE_DNB       = os.getenv("ENABLE_DNB","1") == "1"
 ENABLE_LATE_GOAL = os.getenv("ENABLE_LATE_GOAL","1") == "1"
 ENABLE_UNDER     = os.getenv("ENABLE_UNDER","0") == "1"
 
-# --- Küszöbök + xG kapcsolók ---
+# ÚJ PIACOK
+ENABLE_BTTS       = os.getenv("ENABLE_BTTS","1") == "1"
+ENABLE_TEAM_OVER  = os.getenv("ENABLE_TEAM_OVER","1") == "1"
+ENABLE_CORNERS    = os.getenv("ENABLE_CORNERS","1") == "1"
+
+# --- Küszöbök + xG kapcsolók (meglévők) ---
 NG_DOM   = float(os.getenv("NG_DOM","1.35"))
 NG_SHOTS = float(os.getenv("NG_SHOTS","1.30"))
 NG_XG    = float(os.getenv("NG_XG","1.25"))
 NG_REQUIRE_XG = os.getenv("NG_REQUIRE_XG","0") == "1"
 
-OVER_MINUTE_START = int(os.getenv("OVER_MINUTE_START","42"))  # csak 42' után
+OVER_MINUTE_START = int(os.getenv("OVER_MINUTE_START","42"))
 OVER_XG_SUM       = float(os.getenv("OVER_XG_SUM","1.20"))
 OVER_SHOTS_SUM    = int(os.getenv("OVER_SHOTS_SUM","4"))
 OVER_REQUIRE_XG   = os.getenv("OVER_REQUIRE_XG","0") == "1"
-
-# Késői OVER tiltás
-OVER_HARD_STOP    = int(os.getenv("OVER_HARD_STOP","88"))  # 88' felett nincs OVER-jel
+OVER_HARD_STOP    = int(os.getenv("OVER_HARD_STOP","88"))
 
 DNB_DOM   = float(os.getenv("DNB_DOM","1.45"))
 DNB_SHOTS = float(os.getenv("DNB_SHOTS","1.35"))
@@ -78,26 +79,42 @@ LATE_SHOTS_SUM    = int(os.getenv("LATE_SHOTS_SUM","9"))
 LATE_DA_RUN       = int(os.getenv("LATE_DA_RUN","10"))
 LATE_REQUIRE_XG   = os.getenv("LATE_REQUIRE_XG","0") == "1"
 
+# --- ÚJ: BTTS/TEAM OVER/CORNERS küszöbök (óvatos defaultok) ---
+BTTS_MINUTE_START  = int(os.getenv("BTTS_MINUTE_START","30"))
+BTTS_MIN_SOT_EACH  = int(os.getenv("BTTS_MIN_SOT_EACH","2"))    # mindkét oldalon SOT>=2
+BTTS_MIN_XG_EACH   = float(os.getenv("BTTS_MIN_XG_EACH","0.4")) # mindkét oldalon xG>=0.4 (ha xG elérhető)
+BTTS_REQUIRE_XG    = os.getenv("BTTS_REQUIRE_XG","0") == "1"
+
+TEAM_OVER_MINUTE_START = int(os.getenv("TEAM_OVER_MINUTE_START","40"))
+TEAM_OVER_XG_DIFF      = float(os.getenv("TEAM_OVER_XG_DIFF","0.6"))
+TEAM_OVER_DA_RATIO     = float(os.getenv("TEAM_OVER_DA_RATIO","1.5"))
+
+CORNERS_MINUTE_START   = int(os.getenv("CORNERS_MINUTE_START","35"))
+CORNERS_MIN_DA_SUM     = int(os.getenv("CORNERS_MIN_DA_SUM","20")) # veszélyes támadások összege
+CORNERS_MIN_SHOTS_SUM  = int(os.getenv("CORNERS_MIN_SHOTS_SUM","12"))
+
+# --- Deduplikáció / cooldown ---
 SIGNAL_COOLDOWN_MIN = int(os.getenv("SIGNAL_COOLDOWN_MIN","7"))
 MARKET_COOLDOWN_MIN = int(os.getenv("MARKET_COOLDOWN_MIN","10"))
 
-# Piros lap szűrés
 ENABLE_RED_CARD_FILTER = os.getenv("ENABLE_RED_CARD_FILTER","1") == "1"
-
-# Napi jel-limit
 MAX_SIGNALS_PER_DAY = int(os.getenv("MAX_SIGNALS_PER_DAY","60"))
 
 # --- ODDS ---
 ODDS_PROVIDER = os.getenv("ODDS_PROVIDER","api_football").strip().lower()  # api_football | none
 ODDS_MODE     = os.getenv("ODDS_MODE","none").strip().lower()              # none | shown
 ODDS_BOOKMAKER= (os.getenv("ODDS_BOOKMAKER","bet365") or "").strip().lower()
-OVER_MIN_ODDS = float(os.getenv("OVER_MIN_ODDS","0"))  # 0 → kikapcsolva; pl. 1.25
+
+OVER_MIN_ODDS     = float(os.getenv("OVER_MIN_ODDS","0"))     # 0 → ki
+BTTS_MIN_ODDS     = float(os.getenv("BTTS_MIN_ODDS","0"))
+TEAM_OVER_MIN_ODDS= float(os.getenv("TEAM_OVER_MIN_ODDS","0"))
+CORNERS_MIN_ODDS  = float(os.getenv("CORNERS_MIN_ODDS","0"))
 
 # Debug
 DEBUG_LOG = os.getenv("DEBUG_LOG","1") == "1"
 DEBUG_FILE = "logs/debug.csv"
 
-# --- /summary parancs „frissesség-ablak” másodpercben (default 120) ---
+# /summary „frissesség-ablak”
 SUMMARY_CMD_WINDOW_SEC = int(os.getenv("SUMMARY_CMD_WINDOW_SEC","120"))
 
 tz = pytz.timezone(TIMEZONE)
@@ -140,8 +157,9 @@ def current_limits():
 def clamp(v, lo, hi):
     return max(lo, min(hi, v))
 
+def ratio(a, b): return (a + 1e-9) / (b + 1e-9)
+
 def send_message(text: str, chat_id: str | None = None):
-    """Alapból a csatornára küld (TELEGRAM_CHAT_ID), de felülírható."""
     target_default = TELEGRAM_CHAT_ID
     if not TELEGRAM_BOT_TOKEN or not (chat_id or target_default):
         print(f"[{now_str()}] ERROR: Telegram token/chat_id hiányzik.")
@@ -177,17 +195,11 @@ def _write_update_offset(val: int):
         pass
 
 def poll_and_handle_commands():
-    """
-    Rövid polling a futás elején:
-    - /summary csak az ADMIN-tól
-    - csak FRISS üzenetre (SUMMARY_CMD_WINDOW_SEC)
-    - futásonként max 1x
-    """
     if not TELEGRAM_BOT_TOKEN:
         return
     base = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
-    offset = _read_update_offset()  # runnerben nem állandó; frissesség-szűrő megoldja a duplázást
+    offset = _read_update_offset()
     params = {"timeout": 0}
     if offset:
         params["offset"] = offset + 1
@@ -212,28 +224,22 @@ def poll_and_handle_commands():
             text = (msg.get("text") or "").strip()
             chat = msg.get("chat") or {}
             chat_id = str(chat.get("id") or "")
-            msg_date = int(msg.get("date") or 0)  # unix time
+            msg_date = int(msg.get("date") or 0)
 
             if not text or not chat_id:
                 continue
-
-            # Parancsokat csak az ADMIN privát chatjéből fogadunk
             if not TELEGRAM_ADMIN_CHAT_ID or chat_id != TELEGRAM_ADMIN_CHAT_ID:
                 continue
-
-            # Csak FRISS parancsot fogadjunk el (pl. utóbbi 120 mp)
             if msg_date and (now_unix - msg_date) > SUMMARY_CMD_WINDOW_SEC:
                 continue
 
             if text.lower() == "/summary":
                 if ran_summary_this_run:
-                    # már futott ebben a ciklusban
                     continue
                 if not HAS_SUMMARY:
                     send_message("⚠️ A /summary funkció nincs telepítve (daily_summary.py hiányzik).", chat_id)
                 else:
                     send_message("📊 Napi összegzés indítása...", chat_id)
-                    # ideiglenes chat override: a summary neked válaszoljon
                     old_override = os.getenv("_TMP_SUMMARY_CHAT")
                     os.environ["_TMP_SUMMARY_CHAT"] = chat_id
                     try:
@@ -347,10 +353,16 @@ def fetch_live_odds_api_football(fixture_id: int):
     except Exception:
         return None
 
-def pick_odds_for_market(odds_payload, market_kind: str, preferred_book: str, desired_over_label: str | None = None):
+def pick_odds_for_market(odds_payload, market_kind: str, preferred_book: str,
+                         desired_over_label: str | None = None,
+                         team_side: str | None = None):
+    """
+    market_kind: OVER | LATE_GOAL | NEXT_GOAL | DNB | BTTS | TEAM_OVER | CORNERS
+    desired_over_label: pl. "Over 2.5" (OVER/CORNERS), TEAM_OVER-nél "Home Over 1.5"
+    team_side: "home"/"away" TEAM_OVER-hez
+    """
     if not odds_payload:
         return None
-
     preferred_book = (preferred_book or "").lower()
 
     def match_market_name(nm: str, targets: list[str]) -> bool:
@@ -358,20 +370,18 @@ def pick_odds_for_market(odds_payload, market_kind: str, preferred_book: str, de
         low = nm.lower()
         return any(tok in low for tok in targets)
 
-    # preferált bookmaker
+    # Preferált bookmaker (vagy első elérhető)
     books = []
     for item in odds_payload:
         for bk in (item.get("bookmakers") or []):
             name = (bk.get("name") or "")
             if preferred_book and name.lower() == preferred_book:
-                books = [bk]
-                break
+                books = [bk]; break
             books.append(bk)
         if books:
             break
     if not books:
         return None
-
     book = books[0]
     bname = book.get("name") or "Bookmaker"
     bets = book.get("bets") or []
@@ -391,6 +401,48 @@ def pick_odds_for_market(odds_payload, market_kind: str, preferred_book: str, de
                 for v in vals:
                     if (v.get("value") or "").lower().startswith("over"):
                         return (bname, v.get("value") or "Over", v.get("odd") or "")
+
+    elif market_kind == "BTTS":
+        targets = ["both teams to score", "btts"]
+        for bet in bets:
+            if match_market_name(bet.get("name",""), targets):
+                for v in (bet.get("values") or []):
+                    val = (v.get("value") or "").lower()
+                    if "yes" in val:
+                        return (bname, "BTTS Yes", v.get("odd") or "")
+
+    elif market_kind == "TEAM_OVER":
+        # Külön "Team Totals" / "Home Team Total Goals" / "Away Team Total Goals"
+        targets = ["team totals", "team total goals", "home team total", "away team total"]
+        preferred_prefix = "Home" if (team_side == "home") else "Away" if (team_side == "away") else None
+        for bet in bets:
+            if match_market_name(bet.get("name",""), targets):
+                vals = bet.get("values") or []
+                # Próbáljuk a megfelelő oldalt és az "Over X.5"-öt
+                best = None
+                for v in vals:
+                    val = (v.get("value") or "")
+                    low = val.lower()
+                    if "over" in low:
+                        if preferred_prefix and preferred_prefix.lower() in low:
+                            return (bname, val, v.get("odd") or "")
+                        best = best or (bname, val, v.get("odd") or "")
+                if best:
+                    return best
+
+    elif market_kind == "CORNERS":
+        targets = ["corners", "total corners"]
+        wanted = [desired_over_label] if desired_over_label else []
+        for bet in bets:
+            if match_market_name(bet.get("name",""), targets):
+                vals = bet.get("values") or []
+                if wanted:
+                    for v in vals:
+                        if (v.get("value") or "").lower() == wanted[0].lower():
+                            return (bname, v.get("value") or "Corners", v.get("odd") or "")
+                for v in vals:
+                    if (v.get("value") or "").lower().startswith("over"):
+                        return (bname, v.get("value") or "Corners Over", v.get("odd") or "")
     elif market_kind == "NEXT_GOAL":
         targets = ["next goal", "goal next", "team to score next"]
         for bet in bets:
@@ -424,6 +476,7 @@ STAT_ALIASES = {
     "Dangerous Attacks": ["Dangerous Attacks", "Dangerous attacks"],
     "Expected Goals": ["Expected Goals", "xG", "Expected goals", "Exp. Goals", "Exp Goals"],
     "Ball Possession": ["Ball Possession", "Possession", "Possession %"],
+    "Corner Kicks": ["Corner Kicks", "Corners", "Total Corners"],
 }
 def extract_stat(stats_list, team_name: str, stat_key: str):
     if not stats_list: 
@@ -461,12 +514,13 @@ def select_top_fixtures(fixtures, limit):
     scored.sort(key=lambda t: t[0], reverse=True)
     return [fx for _, fx in scored[:limit]]
 
-# --- Cooldown, deduplikáció (intra-run) + NAPI dedup kulcsok (inter-run) ---
+# --- Intra-run cooldown + NAPI állapot (score-érzékeny) ---
 last_stats_fetch = {}
 last_signal_time = {}
 last_market_time = {}
-sent_hashes = set()  # intra-run védelem (rövid cooldown + bucket-es ismétlődés)
-sent_keys_today = set()  # inter-run napi dedup kulcsok: (fixture_id, market, pick_bucket)
+sent_hashes = set()
+# (fixture_id, market) -> {"last_bucket": "...", "last_score":"h:a"}
+sent_state_today = {}
 
 def read_today_signal_count():
     try:
@@ -489,12 +543,15 @@ def read_today_signal_count():
 def pick_bucket_from_text(pick: str) -> str:
     return re.sub(r"\s*\(live\)\s*$", "", (pick or "")).strip()
 
+def over_line_value(bucket: str) -> float | None:
+    try:
+        m = re.search(r"(\d+(?:\.\d+)?)", (bucket or ""))
+        return float(m.group(1)) if m else None
+    except Exception:
+        return None
+
 def preload_sent_keys_today():
-    """
-    Betölti a már elküldött (fixture_id, market, pick_bucket) kulcsokat a napi data/DATE/events.csv-ből.
-    Így a mai napon nem küldjük ki még egyszer ugyanazt a meccs–piac–vonal kombinációt.
-    """
-    global sent_keys_today
+    global sent_state_today
     date = today_date_str()
     path = f"data/{date}/events.csv"
     if not os.path.exists(path):
@@ -506,47 +563,56 @@ def preload_sent_keys_today():
                 fid = str(row.get("fixture_id","")).strip()
                 market = str(row.get("market","")).strip()
                 pb = pick_bucket_from_text(str(row.get("pick","")))
-                if fid and market and pb:
-                    sent_keys_today.add((fid, market, pb))
+                score = str(row.get("score","")).strip()
+                if fid and market and pb and score:
+                    sent_state_today[(fid, market)] = {"last_bucket": pb, "last_score": score}
     except Exception as e:
         print(f"[{now_str()}] preload_sent_keys_today hiba: {e}")
 
-def can_fetch_stats(fid):
-    last = last_stats_fetch.get(fid, 0)
-    return (time.time() - last) >= STATS_COOLDOWN_MIN*60
-
-def allow_signal(fid, market, side_or_kind, minute, pick_bucket=None):
+def allow_signal(fid, market, side_or_kind, minute, pick_bucket=None, score_str=None):
     """
-    Két szintű védelem:
-    1) Intra-run cooldown + dedupe (korábbi logika)
-    2) Inter-run napi dedupe a (fid, market, pick_bucket) kulccsal
+    Szabály:
+    - Ugyanarra a (fixture,market, pick_bucket) kombinációra csak akkor küldünk újra,
+      ha a SCORE változott (gól esett), vagy ha az új pick BUCKET "magasabb vonal"
+      (Over 1.5 -> Over 2.5, Team Over 0.5 -> 1.5, Corners Over 7.5 -> 8.5).
+    - BTTS esetében bucket ugyanaz marad → csak SCORE változásra küldünk újra (de gyakorlatilag 1x/fixture).
+    - Emellett él az intra-run cooldown és per-market cooldown.
     """
     now_t = time.time()
 
-    # 2) Napi dedup: ha már ma küldtük ugyanezt a meccs–piac–vonal kombinációt, NE küldjük újra
-    if pick_bucket:
-        day_key = (str(fid), str(market), str(pick_bucket))
-        if day_key in sent_keys_today:
-            return False
+    if pick_bucket and score_str:
+        key = (str(fid), str(market))
+        prev = sent_state_today.get(key)
+        if prev:
+            prev_bucket = prev.get("last_bucket")
+            prev_score  = prev.get("last_score")
+            if prev_bucket == pick_bucket and prev_score == score_str:
+                return False
+            # vonal-emelkedés vizsgálata azonos score mellett a vonalas piacokon
+            market_u = str(market).upper()
+            if prev_score == score_str and market_u in ("OVER","TEAM_OVER","CORNERS"):
+                cur_line  = over_line_value(pick_bucket) or -1
+                prev_line = over_line_value(prev_bucket) or -1
+                if cur_line <= prev_line:
+                    return False
 
-    # 1) Korábbi cooldown/dedupe
+    # Intra-run védelem
     if (now_t - last_signal_time.get(fid, 0)) < SIGNAL_COOLDOWN_MIN*60:
         return False
     if (now_t - last_market_time.get((fid, market), 0)) < MARKET_COOLDOWN_MIN*60:
         return False
-    bucket = int(minute // 5) * 5
-    h = (fid, market, (pick_bucket or side_or_kind), bucket)
+    bucket5 = int(minute // 5) * 5
+    h = (fid, market, (pick_bucket or side_or_kind), bucket5)
     if h in sent_hashes:
         return False
 
-    # Ha átment minden szűrőn, engedélyezzük
+    # Engedélyezve → frissítések
     last_signal_time[fid] = now_t
     last_market_time[(fid, market)] = now_t
     sent_hashes.add(h)
 
-    # Tegyük hozzá a napi dedup halmazhoz is, hogy még ebben a futásban se menjen ki másodszor
-    if pick_bucket:
-        sent_keys_today.add(day_key)
+    if pick_bucket and score_str:
+        sent_state_today[(str(fid), str(market))] = {"last_bucket": pick_bucket, "last_score": score_str}
     return True
 
 # --- Debug napló ---
@@ -569,10 +635,8 @@ def debug_row(**kw):
             "metrics": kw.get("metrics",""),
         })
 
-def ratio(a, b): return (a + 1e-9) / (b + 1e-9)
-
-# --- RED CARD cache, napi limit számláló ---
-red_card_cache = {}  # fixture_id -> bool
+# --- RED CARD cache ---
+red_card_cache = {}
 def red_card_for_fixture(fid):
     if not ENABLE_RED_CARD_FILTER:
         return False
@@ -586,21 +650,20 @@ def can_send_more_today(already_sent_local, cap):
     today_count = read_today_signal_count()
     return (today_count + already_sent_local) < cap
 
-# --- Esélykalkuláció segédfüggvények (belső, de a %-ot nem írjuk ki) ---
+# --- Esélykalkuláció segédfüggvények (belső, NEM írjuk ki) ---
 def prob_from_factors(*factors, base=0.5, amplify=0.27, low=0.53, high=0.82):
     s = sum(factors) / max(1, len(factors))
     boost = amplify * (0.5 * (tanh(2.0*(s-0.5)) + 1.0))  # 0..amplify
     return clamp(base + boost, low, high)
 
 def norm_ratio(val, thr):
-    return clamp(val / max(1e-9, thr), 0.0, 2.0) / 2.0   # 0..1
+    return clamp(val / max(1e-9, thr), 0.0, 2.0) / 2.0
 
 def minute_norm_descending(minute, start=40, end=95):
-    """Minél később jár az óra, annál KISEBB érték (kevesebb idő marad)."""
     rem = clamp(end - minute, 0, end - start)
     return rem / max(1, (end - start))
 
-# --- Over-vonal kezelések ---
+# --- Over vonalválasztó ---
 def label_to_threshold(label: str) -> float:
     try:
         return float(label.strip().split()[-1])
@@ -609,7 +672,7 @@ def label_to_threshold(label: str) -> float:
 
 def next_over_label_above(goals: int) -> str:
     target = goals + 0.5
-    lines = [0.5,1.5,2.5,3.5,4.5,5.5]
+    lines = [0.5,1.5,2.5,3.5,4.5,5.5,6.5,7.5]
     for ln in lines:
         if ln >= target:
             return f"Over {ln}"
@@ -632,10 +695,41 @@ def choose_over_label(minute, total_goals, xg_sum, shots_sum):
         elif total_goals == 2: lbl = "Over 2.5" if pressure >= 0.6 else "Over 1.5"
         elif total_goals == 1: lbl = "Over 1.5" if pressure >= 0.5 else "Over 0.5"
         else: lbl = "Over 1.5" if pressure >= 0.85 else "Over 0.5"
-
     if label_to_threshold(lbl) <= total_goals:
         lbl = next_over_label_above(total_goals)
     return lbl
+
+# --- Team Over és Corners vonalválasztók (egyszerű heurisztika) ---
+def choose_team_over_label(minute, team_goals, xg_team, da_ratio):
+    # Ha erős dominancia és kevés gól: jöhet magasabb vonal
+    if minute < 60:
+        if team_goals >= 2: return "Over 2.5"
+        if team_goals == 1: return "Over 1.5" if (xg_team or 0) >= 0.8 or da_ratio >= 1.6 else "Over 0.5"
+        return "Over 1.5" if (xg_team or 0) >= 0.9 or da_ratio >= 1.8 else "Over 0.5"
+    elif minute < 80:
+        if team_goals >= 2: return "Over 2.5" if (xg_team or 0) >= 1.2 else "Over 1.5"
+        if team_goals == 1: return "Over 1.5" if (xg_team or 0) >= 0.9 or da_ratio >= 1.5 else "Over 0.5"
+        return "Over 1.5" if (xg_team or 0) >= 1.1 else "Over 0.5"
+    else:
+        if team_goals >= 2: return "Over 2.5" if (xg_team or 0) >= 1.4 else "Over 1.5"
+        if team_goals == 1: return "Over 1.5" if (xg_team or 0) >= 1.0 else "Over 0.5"
+        return "Over 1.5" if (xg_team or 0) >= 1.3 else "Over 0.5"
+
+def choose_corners_over_label(minute, corners_total, shots_sum, da_sum):
+    base = 6.5
+    if minute < 45:
+        base = 7.5 if shots_sum >= 12 or da_sum >= 30 else 6.5
+    elif minute < 70:
+        base = 8.5 if shots_sum >= 18 or da_sum >= 40 else 7.5
+    else:
+        base = 9.5 if shots_sum >= 22 or da_sum >= 50 else 8.5
+    # ne legyen kisebb, mint eddigi + 0.5
+    target = max(base, corners_total + 0.5)
+    # kerekítsük .5-re
+    half = int(target)
+    if target - half < 0.5: target = half + 0.5
+    else: target = half + 0.5
+    return f"Over {target:.1f}"
 
 # --- Piacok jelgenerálása ---
 def gen_next_goal(fx, stats):
@@ -654,10 +748,8 @@ def gen_next_goal(fx, stats):
                   reason="red_card_block", metrics="")
         return []
 
-    home = teams.get("home",{}).get("name","Home")
-    away = teams.get("away",{}).get("name","Away")
-    hg = goals.get("home",0) or 0
-    ag = goals.get("away",0) or 0
+    home = teams.get("home",{}).get("name","Home"); away = teams.get("away",{}).get("name","Away")
+    hg = goals.get("home",0) or 0; ag = goals.get("away",0) or 0
 
     hs_on = extract_stat(stats, home, "Shots on Goal") or 0
     as_on = extract_stat(stats, away, "Shots on Goal") or 0
@@ -687,7 +779,6 @@ def gen_next_goal(fx, stats):
                       reason="threshold_fail",
                       metrics=f"dom={dom:.2f}, shots={shots:.2f}, xgr={('n/a' if xgr is None else f'{xgr:.2f}')}")
             return []
-        # Dinamikus (belső) esélyérték, de NEM írjuk ki
         f_dom   = clamp((dom-1)/0.6, 0.0, 1.0)
         f_shots = clamp((shots-1)/0.6, 0.0, 1.0)
         f_xg    = clamp(((xgr or 1.0)-1)/0.5, 0.0, 1.0) if xgr is not None else 0.5
@@ -718,27 +809,20 @@ def gen_over(fx, stats):
     status_short = fixture.get("status",{}).get("short")
     minute  = fixture.get("status",{}).get("elapsed",0) or 0
 
-    # tiltások
-    if status_short == "HT" or minute < OVER_MINUTE_START:
-        return []
-    if minute >= OVER_HARD_STOP:
-        return []  # 88' után már nem ajánlunk OVER-t
+    if status_short == "HT" or minute < OVER_MINUTE_START: return []
+    if minute >= OVER_HARD_STOP: return []
 
-    home = teams.get("home",{}).get("name","Home")
-    away = teams.get("away",{}).get("name","Away")
-    hg = goals.get("home",0) or 0
-    ag = goals.get("away",0) or 0
+    home = teams.get("home",{}).get("name","Home"); away = teams.get("away",{}).get("name","Away")
+    hg = goals.get("home",0) or 0; ag = goals.get("away",0) or 0
     total_goals = hg + ag
 
-    # külön GÁTLÓ: 0–0 és nagyon késő (≥85') → ne küldjünk OVER-t
-    if total_goals == 0 and minute >= 85:
-        return []
+    if total_goals == 0 and minute >= 85: return []
 
     fid = fixture.get("id")
     if ENABLE_RED_CARD_FILTER and red_card_for_fixture(fid):
         debug_row(phase="OVER", fixture_id=fid, minute=minute,
                   league=f"{league.get('country','')} {league.get('name','')}",
-                  match=f"{teams.get('home',{}).get('name','Home')} – {teams.get('away',{}).get('name','Away')}",
+                  match=f"{home} – {away}",
                   reason="red_card_block", metrics="")
         return []
 
@@ -758,7 +842,6 @@ def gen_over(fx, stats):
         if label_to_threshold(over_label) <= total_goals:
             over_label = next_over_label_above(total_goals)
 
-        # Dinamikus (belső) esély – NEM írjuk ki
         f_xg    = norm_ratio(xg_sum, OVER_XG_SUM)
         f_shots = norm_ratio(shots_sum, OVER_SHOTS_SUM)
         f_time  = minute_norm_descending(minute, 40, 95)
@@ -787,6 +870,163 @@ def gen_over(fx, stats):
                   metrics=f"xg_sum={('n/a' if hxg is None or axg is None else f'{xg_sum:.2f}')}, shots_sum={shots_sum}")
     return []
 
+def gen_btts(fx, stats):
+    if not ENABLE_BTTS: return []
+    fixture = fx.get("fixture", {})
+    teams   = fx.get("teams", {})
+    goals   = fx.get("goals", {})
+    league  = fx.get("league", {})
+    minute  = fixture.get("status",{}).get("elapsed",0) or 0
+    if minute < BTTS_MINUTE_START:
+        return []
+
+    home = teams.get("home",{}).get("name","Home"); away = teams.get("away",{}).get("name","Away")
+    hg = goals.get("home",0) or 0; ag = goals.get("away",0) or 0
+    fid = fixture.get("id")
+
+    if ENABLE_RED_CARD_FILTER and red_card_for_fixture(fid):
+        return []
+
+    hs_on = extract_stat(stats, home, "Shots on Goal") or 0
+    as_on = extract_stat(stats, away, "Shots on Goal") or 0
+    hxg   = extract_stat(stats, home, "Expected Goals")
+    axg   = extract_stat(stats, away, "Expected Goals")
+
+    if BTTS_REQUIRE_XG and (hxg is None or axg is None):
+        return []
+
+    cond_sot = (hs_on >= BTTS_MIN_SOT_EACH and as_on >= BTTS_MIN_SOT_EACH)
+    cond_xg  = True if (hxg is None or axg is None) else (hxg >= BTTS_MIN_XG_EACH and axg >= BTTS_MIN_XG_EACH)
+
+    if cond_sot and cond_xg:
+        # Belső esély (nem írjuk ki)
+        s_factor = clamp((min(hs_on, as_on)-BTTS_MIN_SOT_EACH)/3.0, 0.0, 1.0)
+        x_factor = clamp(((hxg or 0)+(axg or 0))/ (2*BTTS_MIN_XG_EACH+1e-9), 0.0, 2.0)/2.0 if (hxg is not None and axg is not None) else 0.5
+        t_factor = minute_norm_descending(minute, 30, 95)
+        _prob = prob_from_factors(s_factor, x_factor, t_factor, base=0.55, amplify=0.25, low=0.55, high=0.86)
+
+        return [{
+            "market":"BTTS",
+            "league":f"{league.get('country','')} {league.get('name','')}",
+            "match":f"{home} – {away}",
+            "minute":minute,
+            "score":f"{hg}:{ag}",
+            "pick":"BTTS Yes",
+            "prob":round(_prob*100,1),
+            "odds":None,
+            "fixture_id":fid,
+            "side":"btts",
+            "details":{"sot_home":hs_on,"sot_away":as_on,"xg_home":(None if hxg is None else round(hxg,2)),"xg_away":(None if axg is None else round(axg,2))}
+        }]
+    return []
+
+def gen_team_over(fx, stats):
+    if not ENABLE_TEAM_OVER: return []
+    fixture = fx.get("fixture", {})
+    teams   = fx.get("teams", {})
+    goals   = fx.get("goals", {})
+    league  = fx.get("league", {})
+    minute  = fixture.get("status",{}).get("elapsed",0) or 0
+    if minute < TEAM_OVER_MINUTE_START:
+        return []
+
+    home = teams.get("home",{}).get("name","Home"); away = teams.get("away",{}).get("name","Away")
+    hg = goals.get("home",0) or 0; ag = goals.get("away",0) or 0
+    fid = fixture.get("id")
+
+    if ENABLE_RED_CARD_FILTER and red_card_for_fixture(fid):
+        return []
+
+    hdatt = extract_stat(stats, home, "Dangerous Attacks") or 0
+    adatt = extract_stat(stats, away, "Dangerous Attacks") or 0
+    hxg   = extract_stat(stats, home, "Expected Goals")
+    axg   = extract_stat(stats, away, "Expected Goals")
+
+    dom = ratio(hdatt, adatt)
+    xg_diff = (hxg or 0) - (axg or 0) if (hxg is not None and axg is not None) else None
+
+    out=[]
+    # hazai dominancia
+    if dom >= TEAM_OVER_DA_RATIO and ((xg_diff is None) or (xg_diff >= TEAM_OVER_XG_DIFF)):
+        label = choose_team_over_label(minute, hg, (hxg or 0), dom)
+        out.append({
+            "market":"TEAM_OVER",
+            "league":f"{league.get('country','')} {league.get('name','')}",
+            "match":f"{home} – {away}",
+            "minute":minute,
+            "score":f"{hg}:{ag}",
+            "pick":f"Home {label} (live)",
+            "prob":0,
+            "odds":None,
+            "fixture_id":fid,
+            "side":"home",
+            "desired_label": f"Home {label}",
+            "details":{"da_ratio":round(dom,2),"xg_diff":(None if xg_diff is None else round(xg_diff,2))}
+        })
+    # vendég dominancia
+    if (1/dom) >= TEAM_OVER_DA_RATIO and ((xg_diff is None) or ((-xg_diff) >= TEAM_OVER_XG_DIFF)):
+        label = choose_team_over_label(minute, ag, (axg or 0), 1/dom if dom>0 else 0)
+        out.append({
+            "market":"TEAM_OVER",
+            "league":f"{league.get('country','')} {league.get('name','')}",
+            "match":f"{home} – {away}",
+            "minute":minute,
+            "score":f"{hg}:{ag}",
+            "pick":f"Away {label} (live)",
+            "prob":0,
+            "odds":None,
+            "fixture_id":fid,
+            "side":"away",
+            "desired_label": f"Away {label}",
+            "details":{"da_ratio":round(1/dom if dom>0 else 0,2),"xg_diff":(None if xg_diff is None else round(-xg_diff,2))}
+        })
+    return out
+
+def gen_corners(fx, stats):
+    if not ENABLE_CORNERS: return []
+    fixture = fx.get("fixture", {})
+    teams   = fx.get("teams", {})
+    league  = fx.get("league", {})
+    minute  = fixture.get("status",{}).get("elapsed",0) or 0
+    if minute < CORNERS_MINUTE_START:
+        return []
+
+    home = teams.get("home",{}).get("name","Home"); away = teams.get("away",{}).get("name","Away")
+    fid = fixture.get("id")
+
+    # Szögletek (ha csapatonként elérhető, összegezzük)
+    hc = extract_stat(stats, home, "Corner Kicks") or 0
+    ac = extract_stat(stats, away, "Corner Kicks") or 0
+    corners_total = int(hc + ac)
+
+    hs_on = extract_stat(stats, home, "Shots on Goal") or 0
+    as_on = extract_stat(stats, away, "Shots on Goal") or 0
+    hs_off = extract_stat(stats, home, "Shots off Goal") or 0
+    as_off = extract_stat(stats, away, "Shots off Goal") or 0
+    shots_sum = int(hs_on + as_on + hs_off + as_off)
+
+    hdatt = extract_stat(stats, home, "Dangerous Attacks") or 0
+    adatt = extract_stat(stats, away, "Dangerous Attacks") or 0
+    da_sum = int(hdatt + adatt)
+
+    if (shots_sum >= CORNERS_MIN_SHOTS_SUM) and (da_sum >= CORNERS_MIN_DA_SUM):
+        label = choose_corners_over_label(minute, corners_total, shots_sum, da_sum)
+        return [{
+            "market":"CORNERS",
+            "league":f"{league.get('country','')} {league.get('name','')}",
+            "match":f"{home} – {away}",
+            "minute":minute,
+            "score":f"{int(hc)}:{int(ac)}",  # info: corners home:away
+            "pick":f"{label} (live)",
+            "prob":0,
+            "odds":None,
+            "fixture_id":fid,
+            "side":"corners",
+            "desired_label": label,
+            "details":{"corners_total":corners_total,"shots_sum":shots_sum,"da_sum":da_sum}
+        }]
+    return []
+
 def gen_dnb(fx, stats):
     if not ENABLE_DNB: return []
     fixture = fx.get("fixture", {})
@@ -795,10 +1035,8 @@ def gen_dnb(fx, stats):
     league  = fx.get("league", {})
     minute  = fixture.get("status",{}).get("elapsed",0) or 0
 
-    home = teams.get("home",{}).get("name","Home")
-    away = teams.get("away",{}).get("name","Away")
-    hg = goals.get("home",0) or 0
-    ag = goals.get("away",0) or 0
+    home = teams.get("home",{}).get("name","Home"); away = teams.get("away",{}).get("name","Away")
+    hg = goals.get("home",0) or 0; ag = goals.get("away",0) or 0
 
     hs_on = extract_stat(stats, home, "Shots on Goal") or 0
     as_on = extract_stat(stats, away, "Shots on Goal") or 0
@@ -819,28 +1057,14 @@ def gen_dnb(fx, stats):
     if cond_home or cond_away:
         side = "home" if cond_home else "away"
         pick = "Hazai DNB" if cond_home else "Vendég DNB"
-        f_dom   = clamp(( (dom if side=="home" else 1/dom) -1)/0.6, 0.0, 1.0)
-        f_shots = clamp(( (shots if side=="home" else 1/shots) -1)/0.6, 0.0, 1.0)
-        f_xg    = clamp((( (xgr if side=="home" else (1/(xgr or 1.0))) )-1)/0.5, 0.0, 1.0) if xgr is not None else 0.5
-        f_min   = minute_norm_descending(minute, 35, 95)
-        goal_def = abs(hg - ag)
-        f_def   = clamp(goal_def/2.0, 0.0, 1.0)
-        _prob = prob_from_factors(f_dom, f_shots, f_xg, f_min, f_def, base=0.54, amplify=0.26, low=0.54, high=0.84)
-
         out.append({
             "market":"DNB","league":f"{league.get('country','')} {league.get('name','')}",
             "match":f"{home} – {away}","minute":minute,"score":f"{hg}:{ag}",
-            "pick":pick,"prob":round(_prob*100,1),"odds":None,"fixture_id":fixture.get("id"),
+            "pick":pick,"prob":0,"odds":None,"fixture_id":fixture.get("id"),
             "side":side,
-            "details":{"dom":round(dom,2),"shots":round(shots,2),"xgr":(None if xgr is None else round(xgr,2))}
+            "details":{"dom":round(dom,2),"shots":round(shots,2)}
         })
-    else:
-        debug_row(phase="DNB", fixture_id=fixture.get("id"), minute=minute,
-                  league=f"{league.get('country','')} {league.get('name','')}",
-                  match=f"{home} – {away}",
-                  reason="threshold_fail",
-                  metrics=f"dom={dom:.2f}, shots={shots:.2f}, xgr={('n/a' if xgr is None else f'{xgr:.2f}')}")
-    return []
+    return out
 
 def gen_late_goal(fx, stats):
     if not ENABLE_LATE_GOAL: return []
@@ -852,10 +1076,8 @@ def gen_late_goal(fx, stats):
     if minute < LATE_MINUTE_START: 
         return []
 
-    home = teams.get("home",{}).get("name","Home")
-    away = teams.get("away",{}).get("name","Away")
-    hg = goals.get("home",0) or 0
-    ag = goals.get("away",0) or 0
+    home = teams.get("home",{}).get("name","Home"); away = teams.get("away",{}).get("name","Away")
+    hg = goals.get("home",0) or 0; ag = goals.get("away",0) or 0
 
     hxg = extract_stat(stats, home, "Expected Goals")
     axg = extract_stat(stats, away, "Expected Goals")
@@ -880,12 +1102,6 @@ def gen_late_goal(fx, stats):
         else:
             side = "over"; pick = "Over 0.5 (Late)"
 
-        f_xg    = norm_ratio(xg_sum, LATE_XG_SUM)
-        f_shots = norm_ratio(shots_sum, LATE_SHOTS_SUM)
-        f_da    = norm_ratio(da_run, LATE_DA_RUN)
-        f_min   = minute_norm_descending(minute, 68, 100)
-        _prob = prob_from_factors(f_xg, f_shots, f_da, f_min, base=0.58, amplify=0.28, low=0.58, high=0.88)
-
         return [{
             "market":"LATE_GOAL",
             "league":f"{league.get('country','')} {league.get('name','')}",
@@ -893,25 +1109,22 @@ def gen_late_goal(fx, stats):
             "minute":minute,
             "score":f"{hg}:{ag}",
             "pick":pick,
-            "prob":round(_prob*100,1),
+            "prob":0,
             "odds":None,
             "fixture_id":fixture.get("id"),
             "side":side,
             "details":{"xg_sum":(None if hxg is None or axg is None else round(xg_sum,2)),
                        "shots_sum":shots_sum,"da_run":da_run,"dom":round(dom,2)}
         }]
-    else:
-        debug_row(phase="LATE", fixture_id=fixture.get("id"), minute=minute,
-                  league=f"{league.get('country','')} {league.get('name','')}",
-                  match=f"{home} – {away}",
-                  reason="threshold_fail",
-                  metrics=f"xg_sum={('n/a' if hxg is None else f'{xg_sum:.2f}')}, shots_sum={shots_sum}, da_run={da_run}")
     return []
 
 def merge_signals(fx, stats):
     out = []
     out += gen_next_goal(fx, stats)
     out += gen_over(fx, stats)
+    out += gen_btts(fx, stats)          # ÚJ
+    out += gen_team_over(fx, stats)     # ÚJ
+    out += gen_corners(fx, stats)       # ÚJ
     out += gen_dnb(fx, stats)
     out += gen_late_goal(fx, stats)
     return out
@@ -940,23 +1153,23 @@ def log_event(row: dict):
         })
 
 def format_signal_message(s, odds_line: str):
-    # ESÉLY % ELTÁVOLÍTVA
+    # Esély %-ot nem írjuk ki
     return (
-        f"⚡ <b>{s['market'].replace('_',' ')} ALERT</b>\n"
+        f"⚡ <b>{s['market'].replace('_',' ')}</b>\n"
         f"🏟️ <b>Meccs</b>: {s['match']} ({s['score']}, {s['minute']}' )\n"
         f"🏆 <b>Liga</b>: {s['league']}\n"
         f"🎯 <b>Tipp</b>: {s['pick']}{odds_line}\n"
     )
 
 def main():
-    # 0) Napi, inter-run dedup kulcsok előtöltése
+    # Napi állapot előtöltés (score-érzékeny dedup)
     preload_sent_keys_today()
 
-    # 1) /summary parancsok kezelése a futás elején (csak ADMIN, friss üzenet, max 1x)
+    # /summary kezelés
     poll_and_handle_commands()
 
     if SEND_ONLINE_ON_START:
-        send_message(f"✅ <b>LiveMesterBot (TEST) online</b>\n🕒 {now_str()}")
+        send_message(f"✅ <b>LiveMesterBot</b>\n🕒 {now_str()}")
 
     start_time = time.time()
     already_sent_local = 0
@@ -985,7 +1198,7 @@ def main():
                 if stop_flag: break
                 fid = fx.get("fixture",{}).get("id")
                 if not fid: continue
-                if not can_fetch_stats(fid):
+                if (time.time() - last_stats_fetch.get(fid, 0)) < STATS_COOLDOWN_MIN*60:
                     debug_row(phase="STATS", fixture_id=fid, minute=fx.get("fixture",{}).get("status",{}).get("elapsed",0), reason="cooldown_skip", metrics="")
                     continue
                 stats = fetch_statistics(fid)
@@ -1005,21 +1218,20 @@ def main():
             for s in merge_signals(fx, stats):
                 market = s["market"]
                 side_or_kind = s.get("side", market)
-
-                # Napi dedup kulcs azonos meccs–piac–vonalra
                 pick_bucket = pick_bucket_from_text(s.get("pick",""))
-
+                score_str   = s.get("score","")
                 if not can_send_more_today(already_sent_local, MAX_SIGNALS_PER_DAY):
                     debug_row(phase="ALLOW", fixture_id=fid, minute=minute, reason="daily_cap_reached", metrics=f"MAX={MAX_SIGNALS_PER_DAY}")
                     continue
-                if allow_signal(fid, market, side_or_kind, minute, pick_bucket=pick_bucket):
+                if allow_signal(fid, market, side_or_kind, minute, pick_bucket=pick_bucket, score_str=score_str):
                     signals.append(s)
                 else:
-                    debug_row(phase="ALLOW", fixture_id=fid, minute=minute, reason="cooldown_or_day_dedupe_block", metrics=f"{market}/{pick_bucket}")
+                    debug_row(phase="ALLOW", fixture_id=fid, minute=minute, reason="cooldown_or_state_block", metrics=f"{market}/{pick_bucket}")
 
         if signals:
-            priority = {"LATE_GOAL":1, "NEXT_GOAL":2, "DNB":3, "OVER":4, "UNDER":5}
-            signals.sort(key=lambda x: (priority.get(x["market"], 9), -x["prob"]))
+            # Prioritás: gondoljuk át – hagyjuk a késői marketeket előre
+            priority = {"LATE_GOAL":1, "NEXT_GOAL":2, "TEAM_OVER":3, "BTTS":4, "OVER":5, "CORNERS":6, "DNB":7, "UNDER":8}
+            signals.sort(key=lambda x: (priority.get(x["market"], 9)))
 
             for s in signals:
                 if not can_send_more_today(already_sent_local, MAX_SIGNALS_PER_DAY):
@@ -1027,18 +1239,27 @@ def main():
                     continue
 
                 odds_line = ""
-                # ODDS mód + minimum ár szűrő csak akkor, ha van ár
                 if ODDS_MODE == "shown" and ODDS_PROVIDER == "api_football":
                     odds_payload = fetch_live_odds_api_football(s["fixture_id"])
-                    mk = "OVER" if s["market"] in ("OVER","UNDER","LATE_GOAL") else s["market"]
-                    desired = s.get("desired_label") if mk == "OVER" else None
-                    picked = pick_odds_for_market(odds_payload, mk, ODDS_BOOKMAKER, desired_over_label=desired)
+                    mk = s["market"]
+                    desired = s.get("desired_label")
+                    team_side = s.get("side") if mk == "TEAM_OVER" else None
+                    picked = pick_odds_for_market(odds_payload, mk, ODDS_BOOKMAKER, desired_over_label=desired, team_side=team_side)
                     if picked:
                         bname, label, price = picked
-                        # OVER-minimum ár szűrő
+                        # minimum odds szűrés piacfüggően
                         try:
-                            if s["market"] == "OVER" and OVER_MIN_ODDS > 0 and price and float(price) < OVER_MIN_ODDS:
-                                debug_row(phase="SEND", fixture_id=s["fixture_id"], minute=s["minute"], reason="over_min_odds_block", metrics=f"price={price} < {OVER_MIN_ODDS}")
+                            if mk == "OVER" and OVER_MIN_ODDS > 0 and price and float(price) < OVER_MIN_ODDS:
+                                debug_row(phase="SEND", fixture_id=s["fixture_id"], minute=s["minute"], reason="over_min_odds_block", metrics=f"{price} < {OVER_MIN_ODDS}")
+                                continue
+                            if mk == "BTTS" and BTTS_MIN_ODDS > 0 and price and float(price) < BTTS_MIN_ODDS:
+                                debug_row(phase="SEND", fixture_id=s["fixture_id"], minute=s["minute"], reason="btts_min_odds_block", metrics=f"{price} < {BTTS_MIN_ODDS}")
+                                continue
+                            if mk == "TEAM_OVER" and TEAM_OVER_MIN_ODDS > 0 and price and float(price) < TEAM_OVER_MIN_ODDS:
+                                debug_row(phase="SEND", fixture_id=s["fixture_id"], minute=s["minute"], reason="team_over_min_odds_block", metrics=f"{price} < {TEAM_OVER_MIN_ODDS}")
+                                continue
+                            if mk == "CORNERS" and CORNERS_MIN_ODDS > 0 and price and float(price) < CORNERS_MIN_ODDS:
+                                debug_row(phase="SEND", fixture_id=s["fixture_id"], minute=s["minute"], reason="corners_min_odds_block", metrics=f"{price} < {CORNERS_MIN_ODDS}")
                                 continue
                         except Exception:
                             pass
@@ -1046,7 +1267,7 @@ def main():
                             odds_line = f"\n💰 <b>Odds</b>: {price} ({bname} – {label})"
 
                 msg = format_signal_message(s, odds_line)
-                send_message(msg)          # ← csatornára megy
+                send_message(msg)
                 log_event(s)
                 already_sent_local += 1
         else:
@@ -1055,7 +1276,6 @@ def main():
         if RUN_MINUTES > 0 and (time.time() - start_time) >= RUN_MINUTES * 60:
             break
 
-        # Rövid alvás a következő ciklusig (runner időkereten belül maradunk)
         for _ in range(int(max(1, poll))):
             if stop_flag: break
             time.sleep(1)
