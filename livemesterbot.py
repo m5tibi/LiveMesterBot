@@ -92,43 +92,57 @@ def should_send_tip(fx):
 def main_loop():
     sent_ids = set()
     tz = pytz.timezone(TIMEZONE)
+    start_msg = f"🚀 <b>LiveMesterBot elindult!</b>\n⏰ Időpont: {datetime.now(tz).strftime('%H:%M:%S')}"
     print(f"[{datetime.now(tz)}] Bot motor elindult...", flush=True)
     
-    while True:
-        now = datetime.now(tz)
-        current_hour = now.hour
+    # Indulási üzenet küldése Telegramra
+    send_telegram(start_msg)
+    
+    try:
+        while True:
+            now = datetime.now(tz)
+            current_hour = now.hour
 
-        if 0 <= current_hour < 4:
-            if now.minute % 15 == 0 and now.second < 30:
-                print(f"[{now.strftime('%H:%M:%S')}] Éjszakai szünet (00-04)...", flush=True)
-            time.sleep(30)
-            continue
-
-        fixtures = get_live_fixtures()
-        # Részletes logolás az aktív működésről
-        print(f"[{now.strftime('%H:%M:%S')}] Ellenőrzés: {len(fixtures)} élő meccs lekérve az API-ból.", flush=True)
-
-        for fx in fixtures:
-            match_id = fx["fixture"]["id"]
-            if match_id in sent_ids:
+            if 0 <= current_hour < 4:
+                if now.minute % 15 == 0 and now.second < 30:
+                    print(f"[{now.strftime('%H:%M:%S')}] Éjszakai szünet (00-04)...", flush=True)
+                time.sleep(30)
                 continue
 
-            send, tip_text, confidence, score = should_send_tip(fx)
-            if send:
-                msg = (
-                    f"⚽ <b>ÉLŐ FOGADÁSI TIPP</b>\n\n"
-                    f"<b>Mérkőzés:</b> {fx['teams']['home']['name']} – {fx['teams']['away']['name']}\n"
-                    f"<b>Állás:</b> {score}\n"
-                    f"<b>Liga:</b> {fx['league']['name']}\n"
-                    f"<b>Játékidő:</b> {fx['fixture']['status']['elapsed']}. perc\n\n"
-                    f"<b>Ajánlott tipp:</b> {tip_text}\n"
-                    f"<b>Biztonság:</b> {confidence}%"
-                )
-                send_telegram(msg)
-                sent_ids.add(match_id)
-                print(f"[{now.strftime('%H:%M:%S')}] TIPP ELKÜLDVE: {fx['teams']['home']['name']}", flush=True)
-        
-        time.sleep(30)
+            fixtures = get_live_fixtures()
+            print(f"[{now.strftime('%H:%M:%S')}] Ellenőrzés: {len(fixtures)} élő meccs lekérve az API-ból.", flush=True)
+
+            for fx in fixtures:
+                match_id = fx["fixture"]["id"]
+                if match_id in sent_ids:
+                    continue
+
+                send, tip_text, confidence, score = should_send_tip(fx)
+                if send:
+                    msg = (
+                        f"⚽ <b>ÉLŐ FOGADÁSI TIPP</b>\n\n"
+                        f"<b>Mérkőzés:</b> {fx['teams']['home']['name']} – {fx['teams']['away']['name']}\n"
+                        f"<b>Állás:</b> {score}\n"
+                        f"<b>Liga:</b> {fx['league']['name']}\n"
+                        f"<b>Játékidő:</b> {fx['fixture']['status']['elapsed']}. perc\n\n"
+                        f"<b>Ajánlott tipp:</b> {tip_text}\n"
+                        f"<b>Biztonság:</b> {confidence}%"
+                    )
+                    send_telegram(msg)
+                    sent_ids.add(match_id)
+                    print(f"[{now.strftime('%H:%M:%S')}] TIPP ELKÜLDVE: {fx['teams']['home']['name']}", flush=True)
+            
+            time.sleep(30)
+            
+    except Exception as e:
+        # Hiba esetén értesítés
+        error_msg = f"⚠️ <b>LiveMesterBot hiba miatt leállt!</b>\n❌ Hiba: {str(e)}"
+        send_telegram(error_msg)
+        raise e
+    finally:
+        # Normál leállás (pl. kézi leállítás) esetén
+        stop_msg = f"🛑 <b>LiveMesterBot leállt.</b>\n⏰ Időpont: {datetime.now(tz).strftime('%H:%M:%S')}"
+        send_telegram(stop_msg)
 
 if __name__ == "__main__":
     keep_alive()
