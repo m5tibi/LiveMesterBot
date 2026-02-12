@@ -22,10 +22,10 @@ def keep_alive():
     t.daemon = True
     t.start()
 
-# ========= KONFIGURÁCIÓ =========
-API_KEY = os.environ.get("FOOTBALL_API_KEY", "IDE_API_KULCS")
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "IDE_TG_TOKEN")
-CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "IDE_CHAT_ID")
+# ========= KONFIGURÁCIÓ (Környezeti változókból) =========
+API_KEY = os.environ.get("FOOTBALL_API_KEY", "IDE_IRD_AZ_API_KULCSOT")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "IDE_IRD_A_TG_TOKENT")
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "IDE_IRD_A_CHAT_ID-T")
 TIMEZONE = "Europe/Budapest"
 
 BASE_URL = "https://v3.football.api-sports.io"
@@ -64,21 +64,33 @@ def should_send_tip(fx):
     minute = fx["fixture"]["status"]["elapsed"] or 0
     league = fx["league"]["name"].lower()
     match_id = fx["fixture"]["id"]
+    home_name = fx['teams']['home']['name']
     
     home_score = fx["goals"]["home"] if fx["goals"]["home"] is not None else 0
     away_score = fx["goals"]["away"] if fx["goals"]["away"] is not None else 0
     total_goals = home_score + away_score
     current_score = f"{home_score}-{away_score}"
 
+    # 1. Alapszűrés
     banned = ["friendly", "u21", "u23", "reserve", "youth", "development", "women"]
-    if any(bad in league for bad in banned) or total_goals >= 2:
+    if any(bad in league for bad in banned):
+        return False, None, 0, ""
+    
+    if total_goals >= 2:
         return False, None, 0, ""
 
+    # 2. Statisztika lekérése és DEBUG logolás
     stats = get_match_stats(match_id)
-    # Ha nincs statisztika, vagy kevés a lövés
-    if not stats or stats["shots"] < 3:
+    shots = stats["shots"] if stats else 0
+    
+    # Kiírjuk a konzolra, hogy lássuk, mennyi lövést érzékel
+    print(f"DEBUG: {home_name} - Lövések: {shots} | Állás: {current_score} | Perc: {minute}", flush=True)
+
+    # TESZT ÜZEMMÓD: 3 lövés helyett már 1-nél is mehet a tipp
+    if not stats or shots < 1:
         return False, None, 0, ""
 
+    # 3. Tipp logika
     if 20 <= minute <= 70:
         confidence = 65 + (minute // 5)
         if total_goals == 1: confidence += 10
@@ -92,10 +104,8 @@ def should_send_tip(fx):
 def main_loop():
     sent_ids = set()
     tz = pytz.timezone(TIMEZONE)
-    start_msg = f"🚀 <b>LiveMesterBot elindult!</b>\n⏰ Időpont: {datetime.now(tz).strftime('%H:%M:%S')}"
+    start_msg = f"🚀 <b>LiveMesterBot elindult! (TESZT MÓD)</b>\n⏰ Időpont: {datetime.now(tz).strftime('%H:%M:%S')}"
     print(f"[{datetime.now(tz)}] Bot motor elindult...", flush=True)
-    
-    # Indulási üzenet küldése Telegramra
     send_telegram(start_msg)
     
     try:
@@ -104,13 +114,11 @@ def main_loop():
             current_hour = now.hour
 
             if 0 <= current_hour < 4:
-                if now.minute % 15 == 0 and now.second < 30:
-                    print(f"[{now.strftime('%H:%M:%S')}] Éjszakai szünet (00-04)...", flush=True)
                 time.sleep(30)
                 continue
 
             fixtures = get_live_fixtures()
-            print(f"[{now.strftime('%H:%M:%S')}] Ellenőrzés: {len(fixtures)} élő meccs lekérve az API-ból.", flush=True)
+            print(f"[{now.strftime('%H:%M:%S')}] Ellenőrzés: {len(fixtures)} élő meccs lekérve.", flush=True)
 
             for fx in fixtures:
                 match_id = fx["fixture"]["id"]
@@ -135,14 +143,10 @@ def main_loop():
             time.sleep(30)
             
     except Exception as e:
-        # Hiba esetén értesítés
-        error_msg = f"⚠️ <b>LiveMesterBot hiba miatt leállt!</b>\n❌ Hiba: {str(e)}"
-        send_telegram(error_msg)
+        send_telegram(f"⚠️ <b>Hiba:</b> {str(e)}")
         raise e
     finally:
-        # Normál leállás (pl. kézi leállítás) esetén
-        stop_msg = f"🛑 <b>LiveMesterBot leállt.</b>\n⏰ Időpont: {datetime.now(tz).strftime('%H:%M:%S')}"
-        send_telegram(stop_msg)
+        send_telegram(f"🛑 <b>LiveMesterBot leállt.</b>")
 
 if __name__ == "__main__":
     keep_alive()
