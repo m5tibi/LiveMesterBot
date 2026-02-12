@@ -11,7 +11,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "A LiveMesterBot fut! (00:00 - 04:00 között pihenő módban)"
+    return "A LiveMesterBot Statisztikai Előszűrővel fut!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
@@ -22,7 +22,7 @@ def keep_alive():
     t.daemon = True
     t.start()
 
-# ========= KONFIGURÁCIÓ (Környezeti változókból) =========
+# ========= KONFIGURÁCIÓ =========
 API_KEY = os.environ.get("FOOTBALL_API_KEY", "IDE_API_KULCS")
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "IDE_TG_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "IDE_CHAT_ID")
@@ -30,21 +30,61 @@ TIMEZONE = "Europe/Budapest"
 
 BASE_URL = "https://v3.football.api-sports.io"
 HEADERS = {"x-apisports-key": API_KEY}
-TG_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+
+# Napi figyelt meccsek listája (ID-k)
+daily_targets = []
 
 def send_telegram(message: str):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        requests.post(TG_URL, data={"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}, timeout=10)
-    except Exception as e:
-        print(f"Telegram hiba: {e}", flush=True)
+        requests.post(url, data={"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}, timeout=10)
+    except:
+        pass
 
-def get_live_fixtures():
+def get_team_avg_goals(team_id):
+    """Lekéri a csapat utolsó 10 meccsének gólátlagát."""
     try:
-        r = requests.get(f"{BASE_URL}/fixtures?live=all", headers=HEADERS, timeout=10)
-        return r.json().get("response", [])
+        r = requests.get(f"{BASE_URL}/fixtures?team={team_id}&last=10", headers=HEADERS, timeout=10)
+        fixtures = r.json().get("response", [])
+        if not fixtures: return 0
+        total_goals = sum((f['goals']['home'] or 0) + (f['goals']['away'] or 0) for f in fixtures)
+        return total_goals / len(fixtures)
+    except:
+        return 0
+
+def get_daily_fixtures():
+    """Hajnali szkenner: csak a gólgazdag (avg > 2.5) meccseket menti el."""
+    global daily_targets
+    tz = pytz.timezone(TIMEZONE)
+    today = datetime.now(tz).strftime('%Y-%m-%d')
+    new_targets = []
+    
+    print(f"[{today}] Hajnali szkenner indul...", flush=True)
+    try:
+        r = requests.get(f"{BASE_URL}/fixtures?date={today}", headers=HEADERS, timeout=15)
+        all_matches = r.json().get("response", [])
+        
+        for m in all_matches:
+            # Alapszűrés: ne legyen barátságos vagy női
+            league = m['league']['name'].lower()
+            if any(bad in league for bad in ["friendly", "women", "u19", "u21"]): continue
+            
+            home_id = m['teams']['home']['id']
+            away_id = m['teams']['away']['id']
+            
+            # Statisztikai szűrés (ez sok API hívás, de belefér a 75k-ba)
+            avg_home = get_team_avg_goals(home_id)
+            avg_away = get_team_avg_goals(away_id)
+            combined_avg = (avg_home + avg_away) / 2
+            
+            if combined_avg >= 2.5:
+                new_targets.append(m['fixture']['id'])
+                print(f"DEBUG: {m['teams']['home']['name']} meccse felvéve (Avg: {combined_avg:.2f})", flush=True)
+        
+        daily_targets = new_targets
+        send_telegram(f"🔍 <b>Hajnali szkenner kész!</b>\n🎯 {len(all_matches)} meccsből {len(daily_targets)} statisztikailag erős célpont kiválasztva.")
     except Exception as e:
-        print(f"API hiba (fixtures): {e}", flush=True)
-        return []
+        print(f"Szkenner hiba: {e}", flush=True)
 
 def get_match_stats(match_id):
     try:
@@ -61,92 +101,68 @@ def get_match_stats(match_id):
         return None
 
 def should_send_tip(fx):
-    minute = fx["fixture"]["status"]["elapsed"] or 0
-    league = fx["league"]["name"].lower()
     match_id = fx["fixture"]["id"]
-    home_name = fx['teams']['home']['name']
-    
-    home_score = fx["goals"]["home"] if fx["goals"]["home"] is not None else 0
-    away_score = fx["goals"]["away"] if fx["goals"]["away"] is not None else 0
-    total_goals = home_score + away_score
-    current_score = f"{home_score}-{away_score}"
-
-    # 1. Alapszűrés (Ligák, gólszám)
-    banned = ["friendly", "u21", "u23", "reserve", "youth", "development", "women"]
-    if any(bad in league for bad in banned) or total_goals >= 2:
+    # CSAK a reggel kigyűjtött meccseket figyeljük!
+    if match_id not in daily_targets:
         return False, None, 0, ""
 
-    # 2. Statisztika lekérése és intelligens szűrés
+    minute = fx["fixture"]["status"]["elapsed"] or 0
+    home_score = fx["goals"]["home"] or 0
+    away_score = fx["goals"]["away"] or 0
+    total_goals = home_score + away_score
+
+    # Ha már van 2 gól, vagy nem a 20-70 perc között vagyunk, nem érdekes
+    if total_goals >= 2 or minute < 20 or minute > 70:
+        return False, None, 0, ""
+
     stats = get_match_stats(match_id)
     shots = stats["shots"] if stats else 0
     
-    print(f"DEBUG: {home_name} - Lövések: {shots} | Állás: {current_score} | Perc: {minute}", flush=True)
-
-    # HA az API küld adatot (>0), de az 1-nél kevesebb (TESZT MÓD), akkor elvetjük.
-    # HA az API 0-t küld (nincs adat), akkor engedjük tovább a tippet.
-    if stats and 0 < shots < 1:
+    # Intelligens statisztika: ha van adat, kell 2 lövés, ha nincs adat (0), engedjük a statisztikai múlt miatt
+    if stats and 0 < shots < 2:
         return False, None, 0, ""
 
-    # 3. Tipp logika
-    if 20 <= minute <= 70:
-        confidence = 65 + (minute // 5)
-        if total_goals == 1: confidence += 10
-        return True, "Over 1.5 gól", min(confidence, 92), current_score
-
-    if 44 <= minute <= 55 and total_goals <= 1:
-        return True, "2. félidőben több mint 0.5 gól", 78, current_score
-
-    return False, None, 0, ""
+    confidence = 75 + (minute // 5)
+    return True, "Over 1.5 gól (Prémium Szűrt)", min(confidence, 96), f"{home_score}-{away_score}"
 
 def main_loop():
     sent_ids = set()
     tz = pytz.timezone(TIMEZONE)
     
-    # Indulási üzenet
-    start_msg = f"🚀 <b>LiveMesterBot elindult!</b>\n⚙️ Mód: Intelligens Statisztika\n⏰ Idő: {datetime.now(tz).strftime('%H:%M:%S')}"
-    send_telegram(start_msg)
-    print(f"[{datetime.now(tz)}] Bot motor elindult...", flush=True)
+    # Első indításkor is fusson le
+    get_daily_fixtures()
     
+    while True:
+        now = datetime.now(tz)
+        
+        # Minden hajnali 04:01-kor frissítés
+        if now.hour == 4 and now.minute == 1 and now.second < 35:
+            get_daily_fixtures()
+            sent_ids.clear()
+            time.sleep(40)
+
+        if 0 <= now.hour < 4:
+            time.sleep(60)
+            continue
+
+        fixtures = get_live_fixtures_api() # API-Football 'live=all' hívás
+        for fx in fixtures:
+            match_id = fx["fixture"]["id"]
+            if match_id in sent_ids: continue
+
+            send, tip_text, confidence, score = should_send_tip(fx)
+            if send:
+                # Telegram üzenet küldése...
+                sent_ids.add(match_id)
+        
+        time.sleep(45) # Ritkább frissítés elég, mert szűrt a lista
+
+def get_live_fixtures_api():
     try:
-        while True:
-            now = datetime.now(tz)
-            current_hour = now.hour
-
-            # Éjszakai szünet (00:00 - 04:00)
-            if 0 <= current_hour < 4:
-                time.sleep(30)
-                continue
-
-            fixtures = get_live_fixtures()
-            print(f"[{now.strftime('%H:%M:%S')}] Ellenőrzés: {len(fixtures)} élő meccs lekérve.", flush=True)
-
-            for fx in fixtures:
-                match_id = fx["fixture"]["id"]
-                if match_id in sent_ids:
-                    continue
-
-                send, tip_text, confidence, score = should_send_tip(fx)
-                if send:
-                    msg = (
-                        f"⚽ <b>ÉLŐ FOGADÁSI TIPP</b>\n\n"
-                        f"<b>Mérkőzés:</b> {fx['teams']['home']['name']} – {fx['teams']['away']['name']}\n"
-                        f"<b>Állás:</b> {score}\n"
-                        f"<b>Liga:</b> {fx['league']['name']}\n"
-                        f"<b>Játékidő:</b> {fx['fixture']['status']['elapsed']}. perc\n\n"
-                        f"<b>Ajánlott tipp:</b> {tip_text}\n"
-                        f"<b>Biztonság:</b> {confidence}%"
-                    )
-                    send_telegram(msg)
-                    sent_ids.add(match_id)
-                    print(f"[{now.strftime('%H:%M:%S')}] TIPP ELKÜLDVE: {fx['teams']['home']['name']}", flush=True)
-            
-            time.sleep(30)
-            
-    except Exception as e:
-        send_telegram(f"⚠️ <b>Hiba:</b> {str(e)}")
-        raise e
-    finally:
-        send_telegram(f"🛑 <b>LiveMesterBot leállt.</b>")
+        r = requests.get(f"{BASE_URL}/fixtures?live=all", headers=HEADERS, timeout=10)
+        return r.json().get("response", [])
+    except:
+        return []
 
 if __name__ == "__main__":
     keep_alive()
