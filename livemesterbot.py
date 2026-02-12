@@ -23,9 +23,9 @@ def keep_alive():
     t.start()
 
 # ========= KONFIGURÁCIÓ (Környezeti változókból) =========
-API_KEY = os.environ.get("FOOTBALL_API_KEY", "IDE_IRD_AZ_API_KULCSOT")
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "IDE_IRD_A_TG_TOKENT")
-CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "IDE_IRD_A_CHAT_ID-T")
+API_KEY = os.environ.get("FOOTBALL_API_KEY", "IDE_API_KULCS")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "IDE_TG_TOKEN")
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "IDE_CHAT_ID")
 TIMEZONE = "Europe/Budapest"
 
 BASE_URL = "https://v3.football.api-sports.io"
@@ -71,23 +71,20 @@ def should_send_tip(fx):
     total_goals = home_score + away_score
     current_score = f"{home_score}-{away_score}"
 
-    # 1. Alapszűrés
+    # 1. Alapszűrés (Ligák, gólszám)
     banned = ["friendly", "u21", "u23", "reserve", "youth", "development", "women"]
-    if any(bad in league for bad in banned):
-        return False, None, 0, ""
-    
-    if total_goals >= 2:
+    if any(bad in league for bad in banned) or total_goals >= 2:
         return False, None, 0, ""
 
-    # 2. Statisztika lekérése és DEBUG logolás
+    # 2. Statisztika lekérése és intelligens szűrés
     stats = get_match_stats(match_id)
     shots = stats["shots"] if stats else 0
     
-    # Kiírjuk a konzolra, hogy lássuk, mennyi lövést érzékel
     print(f"DEBUG: {home_name} - Lövések: {shots} | Állás: {current_score} | Perc: {minute}", flush=True)
 
-    # TESZT ÜZEMMÓD: 3 lövés helyett már 1-nél is mehet a tipp
-    if not stats or shots < 1:
+    # HA az API küld adatot (>0), de az 1-nél kevesebb (TESZT MÓD), akkor elvetjük.
+    # HA az API 0-t küld (nincs adat), akkor engedjük tovább a tippet.
+    if stats and 0 < shots < 1:
         return False, None, 0, ""
 
     # 3. Tipp logika
@@ -104,15 +101,18 @@ def should_send_tip(fx):
 def main_loop():
     sent_ids = set()
     tz = pytz.timezone(TIMEZONE)
-    start_msg = f"🚀 <b>LiveMesterBot elindult! (TESZT MÓD)</b>\n⏰ Időpont: {datetime.now(tz).strftime('%H:%M:%S')}"
-    print(f"[{datetime.now(tz)}] Bot motor elindult...", flush=True)
+    
+    # Indulási üzenet
+    start_msg = f"🚀 <b>LiveMesterBot elindult!</b>\n⚙️ Mód: Intelligens Statisztika\n⏰ Idő: {datetime.now(tz).strftime('%H:%M:%S')}"
     send_telegram(start_msg)
+    print(f"[{datetime.now(tz)}] Bot motor elindult...", flush=True)
     
     try:
         while True:
             now = datetime.now(tz)
             current_hour = now.hour
 
+            # Éjszakai szünet (00:00 - 04:00)
             if 0 <= current_hour < 4:
                 time.sleep(30)
                 continue
