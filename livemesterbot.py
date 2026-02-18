@@ -3,13 +3,14 @@ import time
 import os
 from datetime import datetime
 import pytz
+import pandas as pd
 from flask import Flask
 from threading import Thread
 
-# ========= RENDER ÉBREN TARTÓ SZERVER =========
+# ========= RENDER ÉBREN TARTÓ =========
 app = Flask('')
 @app.route('/')
-def home(): return "LiveMesterBot PRO: Elit + Favorit vadász üzemmód!"
+def home(): return "LiveMesterBot PRO + Excel Reporting!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -26,15 +27,22 @@ TIMEZONE = "Europe/Budapest"
 
 BASE_URL = "https://v3.football.api-sports.io"
 HEADERS = {"x-apisports-key": API_KEY}
-TG_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
 # GLOBÁLIS TÁROLÓK
-daily_targets = {}      # ID -> {avg, favorit_team_id, favorit_side}
+daily_targets = {}      
 sent_tips_history = [] 
 
-def send_telegram(message: str):
-    try: requests.post(TG_URL, data={"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}, timeout=10)
-    except: pass
+def send_telegram(message: str, file_path=None):
+    try:
+        if file_path:
+            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
+            with open(file_path, 'rb') as f:
+                requests.post(url, data={"chat_id": CHAT_ID, "caption": message, "parse_mode": "HTML"}, files={"document": f}, timeout=20)
+        else:
+            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+            requests.post(url, data={"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}, timeout=10)
+    except Exception as e:
+        print(f"Telegram hiba: {e}", flush=True)
 
 def get_league_standings(league_id, season):
     try:
@@ -59,43 +67,77 @@ def get_team_avg_goals(team_id):
 def get_daily_fixtures():
     global daily_targets
     tz = pytz.timezone(TIMEZONE)
-    today = datetime.now(tz).strftime('%Y-%m-%d')
+    today_dt = datetime.now(tz)
+    today_str = today_dt.strftime('%Y-%m-%d')
     new_targets = {}
+    excel_data = []
     
-    print(f"[{today}] PRO Szkenner indul...", flush=True)
+    print(f"[{today_str}] PRO Szkenner indul...", flush=True)
     try:
-        r = requests.get(f"{BASE_URL}/fixtures?date={today}", headers=HEADERS, timeout=15)
+        r = requests.get(f"{BASE_URL}/fixtures?date={today_str}", headers=HEADERS, timeout=15)
         all_matches = r.json().get("response", [])
         
         for m in all_matches:
+            match_id = m['fixture']['id']
             league_id = m['league']['id']
+            league_name = m['league']['name']
             season = m['league']['season']
             home_id = m['teams']['home']['id']
             away_id = m['teams']['away']['id']
+            home_name = m['teams']['home']['name']
+            away_name = m['teams']['away']['name']
+            start_time = m['fixture']['date'] # ISO formátum
             
             # Gólátlag lekérése
             avg = (get_team_avg_goals(home_id) + get_team_avg_goals(away_id)) / 2
             
-            # Favorit ellenőrzése (Tabella alapján)
+            # Favorit ellenőrzése
             standings = get_league_standings(league_id, season)
-            favorit_side = None
+            favorit_side = "Nincs"
             if standings:
                 h_rank = standings.get(home_id, 99)
                 a_rank = standings.get(away_id, 99)
-                if h_rank <= 5 and a_rank >= 12: favorit_side = "home"
-                elif a_rank <= 5 and h_rank >= 12: favorit_side = "away"
+                if h_rank <= 5 and a_rank >= 12: favorit_side = "HAZAI"
+                elif a_rank <= 5 and h_rank >= 12: favorit_side = "VENDÉG"
 
-            if avg >= 2.8 or favorit_side:
-                new_targets[m['fixture']['id']] = {
+            if avg >= 2.8 or favorit_side != "Nincs":
+                new_targets[match_id] = {
                     "avg": avg,
-                    "favorit_side": favorit_side,
-                    "home_name": m['teams']['home']['name'],
-                    "away_name": m['teams']['away']['name']
+                    "favorit_side": "home" if favorit_side == "HAZAI" else ("away" if favorit_side == "VENDÉG" else None),
+                    "home_name": home_name,
+                    "away_name": away_name
                 }
+                
+                # Adat az Excelhez
+                excel_data.append({
+                    "Időpont (UTC)": start_time[11:16],
+                    "Liga": league_name,
+                    "Hazai csapat": home_name,
+                    "Vendég csapat": away_name,
+                    "Gólátlag (10 meccs)": round(avg, 2),
+                    "Nagy Favorit": favorit_side
+                })
         
         daily_targets = new_targets
-        send_telegram(f"🎯 <b>PRO Szkenner kész!</b>\n🔥 {len(daily_targets)} meccs a listán.\n⭐ Ebből {len([x for x in daily_targets.values() if x['favorit_side']])} favorit meccs.")
-    except Exception as e: print(f"Hiba: {e}", flush=True)
+        
+        # Excel generálás
+        file_name = f"napi_lista_{today_str}.xlsx"
+        if excel_data:
+            df = pd.DataFrame(excel_data)
+            df.to_excel(file_name, index=False)
+            
+            msg = (f"🎯 <b>PRO Szkenner kész!</b>\n"
+                   f"📅 Dátum: {today_str}\n"
+                   f"🔥 {len(daily_targets)} meccs a listán.\n"
+                   f"⭐ Ebből {len([x for x in daily_targets.values() if x['favorit_side']])} favorit meccs.\n\n"
+                   f"<i>A részletes listát csatoltam Excelben!</i>")
+            send_telegram(msg, file_name)
+            if os.path.exists(file_name): os.remove(file_name)
+        else:
+            send_telegram("🎯 <b>PRO Szkenner:</b> Ma nem találtam a kritériumoknak megfelelő meccset.")
+            
+    except Exception as e: 
+        print(f"Hiba a szkennerben: {e}", flush=True)
 
 def get_match_stats(match_id):
     try:
@@ -125,14 +167,14 @@ def should_send_tip(fx):
     h_shots = stats["home_shots"] if stats else 0
     a_shots = stats["away_shots"] if stats else 0
 
-    # 1. STRATÉGIA: FAVORIT HÁTRÁNYBAN (FORDÍTÁS VÁRHATÓ)
+    # 1. STRATÉGIA: FAVORIT HÁTRÁNYBAN
     if data['favorit_side'] == "home" and a_goals > h_goals and total == 1 and 25 < minute < 70:
         return True, "FAVORIT HÁTRÁNYBAN - Hazai vagy Döntetlen (1X)", 85, f"{h_goals}-{a_goals}"
     
     if data['favorit_side'] == "away" and h_goals > a_goals and total == 1 and 25 < minute < 70:
         return True, "FAVORIT HÁTRÁNYBAN - Vendég vagy Döntetlen (X2)", 85, f"{h_goals}-{a_goals}"
 
-    # 2. STRATÉGIA: GÓL VÁRHATÓ (OVER 1.5) - Általános elit szűrő
+    # 2. STRATÉGIA: GÓL VÁRHATÓ
     if total < 2 and 25 < minute < 65:
         if (h_shots + a_shots) >= 4:
             return True, f"GÓL VÁRHATÓ (Over 1.5) - Elit avg: {data['avg']:.2f}", 80, f"{h_goals}-{a_goals}"
@@ -144,9 +186,11 @@ def send_daily_report():
     if not sent_tips_history: return
     wins = 0
     for mid in sent_tips_history:
-        r = requests.get(f"{BASE_URL}/fixtures?id={mid}", headers=HEADERS).json().get("response", [])
-        if r and (r[0]['goals']['home'] + r[0]['goals']['away']) >= 2: wins += 1
-        time.sleep(1)
+        try:
+            r = requests.get(f"{BASE_URL}/fixtures?id={mid}", headers=HEADERS).json().get("response", [])
+            if r and (r[0]['goals']['home'] + r[0]['goals']['away']) >= 2: wins += 1
+            time.sleep(1)
+        except: pass
     
     rate = (wins / len(sent_tips_history)) * 100
     send_telegram(f"📊 <b>NAPI MÉRLEG</b>\n✅ Nyert: {wins}\n❌ Vesztett: {len(sent_tips_history)-wins}\n🎯 Hatékonyság: {rate:.1f}%")
