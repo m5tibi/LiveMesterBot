@@ -9,7 +9,7 @@ from threading import Thread
 
 app = Flask('')
 @app.route('/')
-def home(): return "LiveMesterBot PRO: Foci (MAX) + Kosár/Hoki (ECO) üzemmód!"
+def home(): return "LiveMesterBot PRO: Stabilizált üzemmód"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -26,14 +26,15 @@ TIMEZONE = "Europe/Budapest"
 
 SPORTS_CONFIG = {
     "FOCI": {"url": "https://v3.football.api-sports.io", "min_avg": 2.5, "limit": 999},
-    "KOSÁR": {"url": "https://v1.basketball.api-sports.io", "min_avg": 150, "limit": 40},
-    "HOKI": {"url": "https://v1.hockey.api-sports.io", "min_avg": 4.5, "limit": 40}
+    "KOSÁR": {"url": "https://v1.basketball.api-sports.io", "min_avg": 160, "limit": 30},
+    "HOKI": {"url": "https://v1.hockey.api-sports.io", "min_avg": 5.0, "limit": 30}
 }
 
 HEADERS = {"x-apisports-key": API_KEY}
 TG_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
 daily_football_targets = {}
+last_scan_time = None
 
 def send_telegram(message: str, file_path=None):
     try:
@@ -54,7 +55,6 @@ def get_local_time(iso_date):
     except: return "??:??"
 
 def get_team_avg(sport, url, team_id):
-    # Focinál 10 meccs, egyébként 5 meccs (spórolás)
     last_n = 10 if sport == "FOCI" else 5
     try:
         endpoint = "/fixtures" if sport == "FOCI" else "/games"
@@ -64,22 +64,27 @@ def get_team_avg(sport, url, team_id):
         total = 0
         for g in games:
             if sport == "FOCI":
-                goals = g.get('goals', {})
-                total += (goals.get('home') or 0) + (goals.get('away') or 0)
+                total += (g.get('goals', {}).get('home') or 0) + (g.get('goals', {}).get('away') or 0)
             else:
-                scores = g.get('scores', {})
-                total += (scores.get('home', {}).get('total') or 0) + (scores.get('away', {}).get('total') or 0)
+                s = g.get('scores', {})
+                total += (s.get('home', {}).get('total') or 0) + (s.get('away', {}).get('total') or 0)
         return total / len(games)
     except: return 0
 
 def get_daily_fixtures():
-    global daily_football_targets
+    global daily_football_targets, last_scan_time
     tz = pytz.timezone(TIMEZONE)
-    today = datetime.now(tz).strftime('%Y-%m-%d')
-    new_football_targets = {}
+    now = datetime.now(tz)
+    
+    # Ne fusson le 1 órán belül kétszer (védelem az újraindulás ellen)
+    if last_scan_time and (now - last_scan_time).seconds < 3600:
+        return
+    
+    last_scan_time = now
+    today = now.strftime('%Y-%m-%d')
     excel_rows = []
     
-    send_telegram(f"🔍 <b>PRO Szkenner indul: Foci (MAX) + Kosár/Hoki (ECO)...</b>")
+    send_telegram(f"🔍 <b>Szkenner indul: Foci + Kosár + Hoki</b>")
 
     for sport, config in SPORTS_CONFIG.items():
         try:
@@ -89,7 +94,6 @@ def get_daily_fixtures():
             r = requests.get(f"{url}{endpoint}?date={today}", headers=HEADERS, timeout=20)
             matches = r.json().get("response", [])
             
-            # Focinál nincs limit, a többinél van
             for m in matches[:config["limit"]]:
                 try:
                     home, away = m['teams']['home'], m['teams']['away']
@@ -102,7 +106,6 @@ def get_daily_fixtures():
                     if combined_avg >= config["min_avg"]:
                         favorit_side = "Nincs"
                         if sport == "FOCI":
-                            # Szigorúbb favorit logika: gólátlag különbség alapján
                             if avg_h > avg_a + 1.2: favorit_side = "HAZAI"
                             elif avg_a > avg_h + 1.2: favorit_side = "VENDÉG"
 
@@ -119,14 +122,13 @@ def get_daily_fixtures():
                         if sport == "FOCI" and (combined_avg >= 2.8 or favorit_side != "Nincs"):
                             new_football_targets[m['fixture']['id']] = favorit_side
                 except: continue
-        except Exception as e: print(f"Hiba {sport}: {e}", flush=True)
+        except: continue
 
     daily_football_targets = new_football_targets
     if excel_rows:
-        file_name = f"sport_lista_{today}.xlsx"
-        df = pd.DataFrame(excel_rows).sort_values(by=["SPORT", "IDŐPONT (HU)"])
-        df.to_excel(file_name, index=False)
-        send_telegram(f"✅ <b>Napi lista elkészült!</b>\n⚽ Foci: {len(new_football_targets)} elit meccs figyelve.", file_name)
+        file_name = f"lista_{today}.xlsx"
+        pd.DataFrame(excel_rows).sort_values(by=["SPORT", "IDŐPONT (HU)"]).to_excel(file_name, index=False)
+        send_telegram(f"✅ <b>Napi lista elkészült!</b>", file_name)
         if os.path.exists(file_name): os.remove(file_name)
 
 def get_match_stats(match_id):
@@ -150,7 +152,6 @@ def main_loop():
         if now.hour == 4 and now.minute == 1:
             get_daily_fixtures(); sent_ids.clear(); time.sleep(60)
         
-        # Élő figyelés csak focira (05-24 óra között)
         if 5 <= now.hour <= 23:
             try:
                 r = requests.get(f"{SPORTS_CONFIG['FOCI']['url']}/fixtures?live=all", headers=HEADERS, timeout=15)
@@ -159,18 +160,19 @@ def main_loop():
                     if mid in daily_football_targets and mid not in sent_ids:
                         minute = fx["fixture"]["status"]["elapsed"] or 0
                         h_g, a_g = (fx["goals"]["home"] or 0), (fx["goals"]["away"] or 0)
-                        
-                        # Favorit hátrányban értesítés
                         fav = daily_football_targets[mid]
+                        
+                        # 1. FAVORIT HÁTRÁNYBAN
                         if (fav == "HAZAI" and a_g > h_g) or (fav == "VENDÉG" and h_g > a_g):
                             if 25 < minute < 75:
-                                send_telegram(f"⭐ <b>FAVORIT HÁTRÁNYBAN!</b>\n{fx['teams']['home']['name']} - {fx['teams']['away']['name']}\n{h_g}-{a_g} ({minute}. perc)")
+                                tipp = "1X (Dupla esély)" if fav == "HAZAI" else "X2 (Dupla esély)"
+                                send_telegram(f"⭐ <b>FAVORIT HÁTRÁNYBAN!</b>\n{fx['teams']['home']['name']} - {fx['teams']['away']['name']}\nÁllás: {h_g}-{a_g} ({minute}. perc)\n🎯 <b>Tipp: {tipp}</b>")
                                 sent_ids.add(mid); continue
 
-                        # Szigorú Over 1.5 értesítés
+                        # 2. OVER 1.5 GÓL
                         if 25 < minute < 65 and (h_g + a_g) < 2:
                             if get_match_stats(mid) >= 3:
-                                send_telegram(f"⚽ <b>FOCI ÉLŐ TIPP (Over 1.5)</b>\n{fx['teams']['home']['name']} - {fx['teams']['away']['name']}\n{h_g}-{a_g} ({minute}. perc)")
+                                send_telegram(f"⚽ <b>ÉLŐ TIPP: Over 1.5 gól</b>\n{fx['teams']['home']['name']} - {fx['teams']['away']['name']}\nÁllás: {h_g}-{a_g} ({minute}. perc)")
                                 sent_ids.add(mid)
             except: pass
         time.sleep(60)
