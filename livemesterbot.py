@@ -25,7 +25,7 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "IDE_A_TG_TOKENT")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "IDE_A_CHAT_ID-T")
 TIMEZONE = "Europe/Budapest"
 
-# Sportágankénti végpontok (Az API-Sports legtöbbször ugyanazt a kulcsot engedi)
+# Sportágankénti végpontok
 SPORTS_CONFIG = {
     "FOCI": "https://v3.football.api-sports.io",
     "KOSÁR": "https://v1.basketball.api-sports.io",
@@ -35,7 +35,7 @@ SPORTS_CONFIG = {
 HEADERS = {"x-apisports-key": API_KEY}
 TG_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
-# GLOBÁLIS TÁROLÓK (Csak a focihoz az élő figyeléshez)
+# GLOBÁLIS TÁROLÓK
 daily_football_targets = {}      
 sent_tips_history = [] 
 
@@ -51,15 +51,16 @@ def send_telegram(message: str, file_path=None):
     except: pass
 
 def get_local_time(iso_date):
-    """ISO dátum konvertálása magyar időre (HH:mm)."""
+    """Konvertálja az API időpontokat magyar időre."""
     try:
-        utc_dt = datetime.strptime(iso_date[:19], '%Y-%m-%dT%H:%M:%S').replace(tzinfo=pytz.utc)
+        clean_date = iso_date.replace('Z', '').split('+')[0]
+        utc_dt = datetime.fromisoformat(clean_date).replace(tzinfo=pytz.utc)
         local_tz = pytz.timezone(TIMEZONE)
         return utc_dt.astimezone(local_tz).strftime('%H:%M')
     except: return "??:??"
 
 def get_team_avg(sport, url, team_id):
-    """Lekéri a csapat utolsó 10 meccsének gól/pont átlagát."""
+    """Lekéri a csapat utolsó 10 meccsének átlagát."""
     try:
         endpoint = "/fixtures" if sport == "FOCI" else "/games"
         r = requests.get(f"{url}{endpoint}?team={team_id}&last=10", headers=HEADERS, timeout=10)
@@ -76,6 +77,7 @@ def get_team_avg(sport, url, team_id):
     except: return 0
 
 def get_daily_fixtures():
+    """Összetett szkenner minden sportágra Excel generálással."""
     global daily_football_targets
     tz = pytz.timezone(TIMEZONE)
     today_str = datetime.now(tz).strftime('%Y-%m-%d')
@@ -91,16 +93,14 @@ def get_daily_fixtures():
             matches = r.json().get("response", [])
             
             for m in matches:
-                # Alapadatok
                 league_name = m['league']['name'].upper()
                 home_team = m['teams']['home']
                 away_team = m['teams']['away']
                 start_iso = m['fixture']['date'] if sport == "FOCI" else m['date']
                 
-                # Statisztikai számítás
                 avg_h = get_team_avg(sport, url, home_team['id'])
                 avg_a = get_team_avg(sport, url, away_team['id'])
-                combined_avg = (avg_h + avg_avg_a) / 2 if (avg_h and avg_a) else (avg_h or avg_a)
+                combined_avg = (avg_h + avg_a) / 2 if (avg_h and avg_a) else (avg_h or avg_a)
                 
                 if combined_avg > 0:
                     excel_rows.append({
@@ -112,7 +112,6 @@ def get_daily_fixtures():
                         "ÁTLAG (GÓL/PONT)": round(combined_avg, 2)
                     })
                     
-                    # Foci esetén elmentjük élő figyelésre, ha elég magas az átlag
                     if sport == "FOCI" and combined_avg >= 2.8:
                         new_football_targets[m['fixture']['id']] = {"avg": combined_avg}
         except: continue
@@ -126,8 +125,8 @@ def get_daily_fixtures():
         send_telegram(f"✅ <b>Napi lista kész!</b>\n⚽ Foci célpontok: {len(new_football_targets)}\n🏀/🏒 Egyéb meccsek a fájlban.", file_name)
         if os.path.exists(file_name): os.remove(file_name)
 
-# --- FOCI ÉLŐ LOGIKA (Változatlanul az előző szigorú szabályokkal) ---
 def get_match_stats(match_id):
+    """Élő statisztika lekérése focira."""
     try:
         r = requests.get(f"{SPORTS_CONFIG['FOCI']}/fixtures/statistics?fixture={match_id}", headers=HEADERS, timeout=10)
         data = r.json().get("response", [])
@@ -144,20 +143,22 @@ def main_loop():
     sent_ids = set(); tz = pytz.timezone(TIMEZONE); get_daily_fixtures()
     while True:
         now = datetime.now(tz)
-        if now.hour == 23 and now.minute == 55: # Napi jelentés (kihagyva a rövidítés kedvéért, de maradhat)
-            time.sleep(60)
+        
+        # Hajnali 4:01-es frissítés
         if now.hour == 4 and now.minute == 1:
             get_daily_fixtures(); sent_ids.clear(); time.sleep(60)
         
+        # Élő figyelés csak focira (nap közben)
         if 4 < now.hour < 24:
             try:
                 r = requests.get(f"{SPORTS_CONFIG['FOCI']}/fixtures?live=all", headers=HEADERS, timeout=10)
                 for fx in r.json().get("response", []):
                     mid = fx["fixture"]["id"]
                     if mid in daily_football_targets and mid not in sent_ids:
-                        # Élő szűrés focira: 25-65 perc, max 1 gól, min 3 lövés
                         minute = fx["fixture"]["status"]["elapsed"] or 0
                         total_g = (fx["goals"]["home"] or 0) + (fx["goals"]["away"] or 0)
+                        
+                        # Stratégia: 25-65 perc között, kevés gólnál, jó aktivitással
                         if 25 < minute < 65 and total_g < 2:
                             if get_match_stats(mid) >= 3:
                                 msg = f"⚽ <b>FOCI ÉLŐ TIPP</b>\n{fx['teams']['home']['name']} - {fx['teams']['away']['name']}\nPerc: {minute}' | Állás: {total_g}\nTipp: Over 1.5 gól"
