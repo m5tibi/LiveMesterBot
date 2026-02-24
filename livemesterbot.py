@@ -10,7 +10,7 @@ from threading import Thread
 
 app = Flask('')
 @app.route('/')
-def home(): return "LiveMesterBot PRO: Foci Elemző és Szelvényépítő"
+def home(): return "LiveMesterBot PRO: Elemző és Kiértékelő Aktív"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -27,6 +27,7 @@ TIMEZONE = "Europe/Budapest"
 
 BASE_URL = "https://v3.football.api-sports.io"
 HEADERS = {"x-apisports-key": API_KEY}
+# Fájlok az adatok megőrzéséhez
 CACHE_FILE = "foci_master_cache.json"
 LIVE_HISTORY_FILE = "live_history.json"
 
@@ -35,7 +36,9 @@ def save_json(file, data):
 
 def load_json(file, default):
     if os.path.exists(file):
-        with open(file, 'r') as f: return json.load(f)
+        try:
+            with open(file, 'r') as f: return json.load(f)
+        except: return default
     return default
 
 def send_telegram(message, file_path=None):
@@ -50,7 +53,6 @@ def send_telegram(message, file_path=None):
     except: pass
 
 def get_team_detailed_stats(team_id):
-    """Gólátlag (összes), Rúgott gólátlag és Forma-pontok lekérése."""
     try:
         r = requests.get(f"{BASE_URL}/fixtures?team={team_id}&last=10", headers=HEADERS, timeout=12)
         res = r.json().get("response", [])
@@ -61,7 +63,6 @@ def get_team_detailed_stats(team_id):
             is_home = g['teams']['home']['id'] == team_id
             goals_f = g['goals']['home'] if is_home else g['goals']['away']
             goals_a = g['goals']['away'] if is_home else g['goals']['home']
-            
             total_goals += (g['goals']['home'] or 0) + (g['goals']['away'] or 0)
             scored_goals += (goals_f or 0)
             if (goals_f or 0) > (goals_a or 0): points += 3
@@ -72,18 +73,15 @@ def get_team_detailed_stats(team_id):
     except: return 0, 0, 0
 
 def generate_suggestions(avg, fav, scored_h, scored_a):
-    """Konkrét fogadási ötletek generálása."""
     tips = []
     if avg >= 3.0: tips.append("Over 2.5 gól")
     if avg >= 3.6: tips.append("Over 3.5 gól")
-    
     if fav == "HAZAI":
         tips.append("1X és Over 1.5")
         if scored_h > 1.8: tips.append("Hazai Over 1.5 csapatgól")
     elif fav == "VENDÉG":
         tips.append("X2 és Over 1.5")
         if scored_a > 1.8: tips.append("Vendég Over 1.5 csapatgól")
-        
     return " | ".join(tips) if tips else "Over 1.5 gól"
 
 def scan_next_day():
@@ -98,7 +96,6 @@ def scan_next_day():
         
         for m in matches:
             if "friendly" in m['league']['name'].lower(): continue
-            
             h_id, a_id = m['teams']['home']['id'], m['teams']['away']['id']
             avg_h, scored_h, points_h = get_team_detailed_stats(h_id)
             avg_a, scored_a, points_a = get_team_detailed_stats(a_id)
@@ -108,7 +105,7 @@ def scan_next_day():
                 fav = "Nincs"
                 if points_h >= points_a + 8 and scored_h > scored_a: fav = "HAZAI"
                 elif points_a >= points_h + 8 and scored_a > scored_h: fav = "VENDÉG"
-
+                
                 valid_matches.append({
                     "ID": m['fixture']['id'],
                     "IDŐPONT": (datetime.fromisoformat(m['fixture']['date'][:19]).replace(tzinfo=pytz.utc)).astimezone(tz).strftime('%H:%M'),
@@ -122,11 +119,12 @@ def scan_next_day():
                 })
 
         if valid_matches:
+            # Cache frissítése: megtartjuk a korábbi napokat is a biztonság kedvéért
             cache = load_json(CACHE_FILE, {})
             cache[target_date] = valid_matches
             save_json(CACHE_FILE, cache)
             
-            file_name = f"szelveny_epito_{target_date}.xlsx"
+            file_name = f"szelveny_lista_{target_date}.xlsx"
             pd.DataFrame(valid_matches).to_excel(file_name, index=False)
             send_telegram(f"✅ <b>Holnapi lista elkészült!</b>", file_name)
             os.remove(file_name)
@@ -135,14 +133,17 @@ def scan_next_day():
 
 def get_final_report():
     tz = pytz.timezone(TIMEZONE)
-    today_str = (datetime.now(tz) - timedelta(days=1)).strftime('%Y-%m-%d') # Éjfél után hívjuk, tehát a tegnapit nézzük
+    # 00:10-kor hívjuk, tehát a tegnapi dátumot nézzük
+    today_str = (datetime.now(tz) - timedelta(days=1)).strftime('%Y-%m-%d')
     cache = load_json(CACHE_FILE, {})
     matches = cache.get(today_str, [])
     live_history = load_json(LIVE_HISTORY_FILE, [])
 
-    if not matches: return
+    if not matches:
+        send_telegram(f"⚠️ Nincs adat a tegnapi ({today_str}) meccsek kiértékeléséhez.")
+        return
 
-    send_telegram(f"📊 <b>Napi jelentés ({today_str})</b>")
+    send_telegram(f"📊 <b>Napi jelentés ({today_str})</b>\nEredmények lekérése...")
     final_rows = []
     for m in matches:
         try:
@@ -151,20 +152,24 @@ def get_final_report():
                 res = r[0]
                 h, a = res['goals']['home'], res['goals']['away']
                 m["VÉGEREDMÉNY"] = f"{h}-{a}" if h is not None else "N/A"
-                m["GÓL TIPP SIKER"] = "✅" if h is not None and (h+a) >= 2 else "❌"
+                m["NYERT?"] = "✅" if h is not None and (h+a) >= 2 else "❌"
             final_rows.append(m)
-            time.sleep(0.5)
+            time.sleep(1)
         except: continue
 
     excel_name = f"eredmenyek_{today_str}.xlsx"
     pd.DataFrame(final_rows).to_excel(excel_name, index=False)
     
+    # Élő statisztika
     wins = sum(1 for x in live_history if x.get('win'))
     total = len(live_history)
-    msg = f"📈 <b>ÉLŐ TIPPEK MÉRLEGE</b>\n✅ Nyert: {wins}\n❌ Vesztett: {total-wins}\n🎯 { (wins/total*100) if total > 0 else 0 :.1f}%"
+    rate = (wins/total*100) if total > 0 else 0
+    msg = f"📈 <b>ÉLŐ TIPPEK MÉRLEGE</b>\n✅ Nyert: {wins}\n❌ Vesztett: {total-wins}\n🎯 Hatékonyság: {rate:.1f}%"
     
     send_telegram(msg, excel_name)
     os.remove(excel_name)
+    # Csak az adott napi élő historyt töröljük elméletileg, de most ürítjük
+    save_json(LIVE_HISTORY_FILE, [])
 
 def main_loop():
     sent_ids = set(); tz = pytz.timezone(TIMEZONE)
@@ -175,11 +180,11 @@ def main_loop():
         if now.hour == 16 and now.minute == 0:
             scan_next_day(); time.sleep(60)
             
-        # 00:10 - Összegző a tegnapi 0-24h meccseiről
+        # 00:10 - Éjfél utáni összegző
         if now.hour == 0 and now.minute == 10:
             get_final_report(); sent_ids.clear(); time.sleep(60)
 
-        # Élő figyelés (csak a napi cache alapján)
+        # Élő figyelés
         if 0 <= now.hour <= 23:
             cache = load_json(CACHE_FILE, {})
             today_matches = cache.get(now.strftime('%Y-%m-%d'), [])
@@ -195,6 +200,10 @@ def main_loop():
                             if 25 < minute < 65 and (h_g + a_g) < 2:
                                 send_telegram(f"⚽ <b>ÉLŐ TIPP: Over 1.5 gól</b>\n{fx['teams']['home']['name']} - {fx['teams']['away']['name']}\n{h_g}-{a_g} ({minute}. perc)")
                                 sent_ids.add(mid)
+                                # Élő tipp rögzítése (este ellenőrizzük a végeredménynél)
+                                hist = load_json(LIVE_HISTORY_FILE, [])
+                                hist.append({"id": mid, "win": False})
+                                save_json(LIVE_HISTORY_FILE, hist)
                 except: pass
         time.sleep(60)
 
