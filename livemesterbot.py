@@ -8,7 +8,7 @@ from threading import Thread
 # ========= RENDER ÉBREN TARTÓ =========
 app = Flask('')
 @app.route('/')
-def home(): return "LiveMesterBot EXPERT v3.0: Poisson & GitHub Aktív"
+def home(): return "LiveMesterBot EXPERT v3.1: Stabilizálva"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -30,11 +30,10 @@ TIMEZONE = "Europe/Budapest"
 CACHE_FILE = "foci_master_cache.json"
 LIVE_HISTORY_FILE = "live_history.json"
 
-# ========= MATEMATIKAI MODELLEZÉS =========
+# ========= MATEMATIKAI MODELLEZÉS (POISSON) =========
 def get_over_25_probability(avg_goals):
-    """Poisson-eloszlás alapú Over 2.5 valószínűség (1 - P(0,1,2))."""
-    if avg_goals == 0: return 0
-    # P(k) = (lambda^k * e^-lambda) / k!
+    if avg_goals <= 0: return 0
+    # Poisson formula: P(k) = (lambda^k * e^-lambda) / k!
     p0 = math.exp(-avg_goals)
     p1 = (avg_goals**1) * math.exp(-avg_goals) / 1
     p2 = (avg_goals**2) * math.exp(-avg_goals) / 2
@@ -100,7 +99,6 @@ def scan_next_day():
             over_prob = get_over_25_probability(total_avg)
             cs_total = h_cs + a_cs
             
-            # SZIGORÍTOTT SZŰRÉS: Poisson > 60% és Clean Sheet Kockázat < 6 (20 meccsből)
             if over_prob > 60 and cs_total < 6:
                 fav = "Nincs"
                 if h_p >= a_p + 9 and h_sc > a_sc: fav = "HAZAI"
@@ -118,12 +116,14 @@ def scan_next_day():
                     "TIPP JAVASLAT": "Over 2.5" if over_prob > 75 else "1X/X2 + Over 1.5"
                 })
         if valid:
-            cache = {target: valid}; with open(CACHE_FILE, 'w') as f: json.dump(cache, f)
+            cache = {target: valid}
+            with open(CACHE_FILE, 'w') as f:
+                json.dump(cache, f)
             f_name = f"expert_lista_{target}.xlsx"
             pd.DataFrame(valid).to_excel(f_name, index=False)
-            send_telegram(f"✅ <b>Lista kész!</b> (Poisson & CS szűrve)", f_name)
+            send_telegram(f"✅ <b>Lista kész!</b>", f_name)
             sync_to_github([CACHE_FILE, f_name], f"Expert lista: {target}")
-            os.remove(f_name)
+            if os.path.exists(f_name): os.remove(f_name)
     except Exception as e: send_telegram(f"⚠️ Hiba: {e}")
 
 def get_final_report():
@@ -147,7 +147,7 @@ def get_final_report():
         except: continue
     f_name = f"eredmenyek_{yest}.xlsx"
     pd.DataFrame(final).to_excel(f_name, index=False)
-    send_telegram(f"📊 A tegnapi nap részletes statisztikája:", f_name)
+    send_telegram(f"📊 Tegnapi statisztika:", f_name)
     sync_to_github([f_name], f"Összegzés: {yest}")
 
 def main_loop():
@@ -157,13 +157,12 @@ def main_loop():
         if now.hour == 16 and now.minute == 0: scan_next_day(); time.sleep(60)
         if now.hour == 0 and now.minute == 10: get_final_report(); sent_ids.clear(); time.sleep(60)
         
-        # Élő figyelés Poisson alapú meccsekre
         if 0 <= now.hour <= 23 and os.path.exists(CACHE_FILE):
-            with open(CACHE_FILE, 'r') as f: cache = json.load(f)
-            today_m = cache.get(now.strftime('%Y-%m-%d'), [])
-            if today_m:
-                t_ids = [m['ID'] for m in today_m]
-                try:
+            try:
+                with open(CACHE_FILE, 'r') as f: cache = json.load(f)
+                today_m = cache.get(now.strftime('%Y-%m-%d'), [])
+                if today_m:
+                    t_ids = [m['ID'] for m in today_m]
                     r = requests.get(f"{BASE_URL}/fixtures?live=all", headers=HEADERS, timeout=10)
                     for fx in r.json().get("response", []):
                         mid = fx["fixture"]["id"]
