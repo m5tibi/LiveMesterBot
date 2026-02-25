@@ -8,7 +8,7 @@ from threading import Thread
 # ========= RENDER ÉBREN TARTÓ =========
 app = Flask('')
 @app.route('/')
-def home(): return "LiveMesterBot EXPERT v3.1: Stabilizálva"
+def home(): return "LiveMesterBot EXPERT v3.2: Stabilizálva"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -28,12 +28,10 @@ HEADERS = {"x-apisports-key": API_KEY}
 TIMEZONE = "Europe/Budapest"
 
 CACHE_FILE = "foci_master_cache.json"
-LIVE_HISTORY_FILE = "live_history.json"
 
 # ========= MATEMATIKAI MODELLEZÉS (POISSON) =========
 def get_over_25_probability(avg_goals):
     if avg_goals <= 0: return 0
-    # Poisson formula: P(k) = (lambda^k * e^-lambda) / k!
     p0 = math.exp(-avg_goals)
     p1 = (avg_goals**1) * math.exp(-avg_goals) / 1
     p2 = (avg_goals**2) * math.exp(-avg_goals) / 2
@@ -94,7 +92,6 @@ def scan_next_day():
             if "friendly" in m['league']['name'].lower(): continue
             h_sc, h_con, h_cs, h_p = get_expert_stats(m['teams']['home']['id'])
             a_sc, a_con, a_cs, a_p = get_expert_stats(m['teams']['away']['id'])
-            
             total_avg = (h_sc + h_con + a_sc + a_con) / 2
             over_prob = get_over_25_probability(total_avg)
             cs_total = h_cs + a_cs
@@ -117,8 +114,7 @@ def scan_next_day():
                 })
         if valid:
             cache = {target: valid}
-            with open(CACHE_FILE, 'w') as f:
-                json.dump(cache, f)
+            with open(CACHE_FILE, 'w') as f: json.dump(cache, f)
             f_name = f"expert_lista_{target}.xlsx"
             pd.DataFrame(valid).to_excel(f_name, index=False)
             send_telegram(f"✅ <b>Lista kész!</b>", f_name)
@@ -157,22 +153,24 @@ def main_loop():
         if now.hour == 16 and now.minute == 0: scan_next_day(); time.sleep(60)
         if now.hour == 0 and now.minute == 10: get_final_report(); sent_ids.clear(); time.sleep(60)
         
-        if 0 <= now.hour <= 23 and os.path.exists(CACHE_FILE):
+        # Élő figyelés
+        if 0 <= now.hour <= 23:
             try:
-                with open(CACHE_FILE, 'r') as f: cache = json.load(f)
-                today_m = cache.get(now.strftime('%Y-%m-%d'), [])
-                if today_m:
-                    t_ids = [m['ID'] for m in today_m]
-                    r = requests.get(f"{BASE_URL}/fixtures?live=all", headers=HEADERS, timeout=10)
-                    for fx in r.json().get("response", []):
-                        mid = fx["fixture"]["id"]
-                        if mid in t_ids and mid not in sent_ids:
-                            min_ = fx["fixture"]["status"]["elapsed"] or 0
-                            h, a = (fx["goals"]["home"] or 0), (fx["goals"]["away"] or 0)
-                            if 25 < min_ < 65 and (h+a) < 2:
-                                send_telegram(f"⚽ <b>EXPERT ÉLŐ: Over 1.5</b>\n{fx['teams']['home']['name']} - {fx['teams']['away']['name']}\n{h}-{a} ({min_}. perc)")
-                                sent_ids.add(mid)
-                except: pass
+                if os.path.exists(CACHE_FILE):
+                    with open(CACHE_FILE, 'r') as f: cache = json.load(f)
+                    today_m = cache.get(now.strftime('%Y-%m-%d'), [])
+                    if today_m:
+                        t_ids = [m['ID'] for m in today_m]
+                        r = requests.get(f"{BASE_URL}/fixtures?live=all", headers=HEADERS, timeout=10)
+                        for fx in r.json().get("response", []):
+                            mid = fx["fixture"]["id"]
+                            if mid in t_ids and mid not in sent_ids:
+                                min_ = fx["fixture"]["status"]["elapsed"] or 0
+                                h, a = (fx["goals"]["home"] or 0), (fx["goals"]["away"] or 0)
+                                if 25 < min_ < 65 and (h+a) < 2:
+                                    send_telegram(f"⚽ <b>EXPERT ÉLŐ: Over 1.5</b>\n{fx['teams']['home']['name']} - {fx['teams']['away']['name']}\n{h}-{a} ({min_}. perc)")
+                                    sent_ids.add(mid)
+            except: pass
         time.sleep(60)
 
 if __name__ == "__main__":
