@@ -8,7 +8,7 @@ from threading import Thread
 # ========= RENDER ÉBREN TARTÓ =========
 app = Flask('')
 @app.route('/')
-def home(): return "LiveMesterBot EXPERT v3.2: Stabilizálva"
+def home(): return "LiveMesterBot EXPERT v3.3: Tisztított Tipplogika Aktív"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -29,7 +29,7 @@ TIMEZONE = "Europe/Budapest"
 
 CACHE_FILE = "foci_master_cache.json"
 
-# ========= MATEMATIKAI MODELLEZÉS (POISSON) =========
+# ========= MATEMATIKAI MODELLEZÉS =========
 def get_over_25_probability(avg_goals):
     if avg_goals <= 0: return 0
     p0 = math.exp(-avg_goals)
@@ -37,6 +37,27 @@ def get_over_25_probability(avg_goals):
     p2 = (avg_goals**2) * math.exp(-avg_goals) / 2
     prob = (1 - (p0 + p1 + p2)) * 100
     return max(0, min(100, prob))
+
+def generate_suggestions(avg, fav, s_h, s_a, prob):
+    """Tisztított tipplogika: dupla esély törölve, fókusz a gólokon és csapatgólokon."""
+    tips = []
+    # 1. Gól fókusz (Poisson alapján)
+    if prob > 75:
+        tips.append("Over 2.5 gól")
+    elif prob > 60:
+        tips.append("Over 1.5 gól")
+    
+    # 2. Csapatgólok (Favorit ereje alapján)
+    if fav == "HAZAI" and s_h > 1.7:
+        tips.append("Hazai csapat > 1.5 gól")
+    elif fav == "VENDÉG" and s_a > 1.7:
+        tips.append("Vendég csapat > 1.5 gól")
+    
+    # 3. BTTS (Ha nincs favorit, de magas az átlag és alacsony a védelmi fal)
+    if avg > 3.3 and fav == "Nincs":
+        tips.append("Mindkét csapat gólt szerez (BTTS)")
+        
+    return " | ".join(tips) if tips else "Over 1.5 gól"
 
 # ========= GITHUB SZINKRONIZÁCIÓ =========
 def sync_to_github(file_list, commit_message):
@@ -83,7 +104,7 @@ def send_telegram(message, file_path=None):
 def scan_next_day():
     tz = pytz.timezone(TIMEZONE)
     target = (datetime.now(tz) + timedelta(days=1)).strftime('%Y-%m-%d')
-    send_telegram(f"🔬 <b>Szakértői Analízis indul: {target}</b>")
+    send_telegram(f"🔬 <b>Szakértői Analízis: {target}</b>\n(Tisztított tipprendszer)")
     try:
         r = requests.get(f"{BASE_URL}/fixtures?date={target}", headers=HEADERS, timeout=30)
         matches = r.json().get("response", [])
@@ -110,7 +131,7 @@ def scan_next_day():
                     "FAVORIT": fav,
                     "CLEAN SHEET (20/x)": cs_total,
                     "FORMA (H-V PONT)": f"{h_p}-{a_p}",
-                    "TIPP JAVASLAT": "Over 2.5" if over_prob > 75 else "1X/X2 + Over 1.5"
+                    "TIPP JAVASLAT": generate_suggestions(total_avg, fav, h_sc, a_sc, over_prob)
                 })
         if valid:
             cache = {target: valid}
@@ -153,7 +174,6 @@ def main_loop():
         if now.hour == 16 and now.minute == 0: scan_next_day(); time.sleep(60)
         if now.hour == 0 and now.minute == 10: get_final_report(); sent_ids.clear(); time.sleep(60)
         
-        # Élő figyelés
         if 0 <= now.hour <= 23:
             try:
                 if os.path.exists(CACHE_FILE):
