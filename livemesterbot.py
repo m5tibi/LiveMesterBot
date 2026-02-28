@@ -8,7 +8,7 @@ from threading import Thread
 # ========= RENDER ÉBREN TARTÓ =========
 app = Flask('')
 @app.route('/')
-def home(): return "LiveMesterBot EXPERT v3.3: Tisztított Tipplogika Aktív"
+def home(): return "LiveMesterBot EXPERT v3.4: JSON Fix Aktív"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -28,38 +28,25 @@ HEADERS = {"x-apisports-key": API_KEY}
 TIMEZONE = "Europe/Budapest"
 
 CACHE_FILE = "foci_master_cache.json"
+LIVE_HISTORY_FILE = "live_history.json"
 
-# ========= MATEMATIKAI MODELLEZÉS =========
-def get_over_25_probability(avg_goals):
-    if avg_goals <= 0: return 0
-    p0 = math.exp(-avg_goals)
-    p1 = (avg_goals**1) * math.exp(-avg_goals) / 1
-    p2 = (avg_goals**2) * math.exp(-avg_goals) / 2
-    prob = (1 - (p0 + p1 + p2)) * 100
-    return max(0, min(100, prob))
+# ========= SEGÉDFÜGGVÉNYEK =========
+def load_json(file, default):
+    if os.path.exists(file):
+        try:
+            if os.path.getsize(file) > 0:
+                with open(file, 'r') as f:
+                    return json.load(f)
+        except:
+            pass
+    return default
 
-def generate_suggestions(avg, fav, s_h, s_a, prob):
-    """Tisztított tipplogika: dupla esély törölve, fókusz a gólokon és csapatgólokon."""
-    tips = []
-    # 1. Gól fókusz (Poisson alapján)
-    if prob > 75:
-        tips.append("Over 2.5 gól")
-    elif prob > 60:
-        tips.append("Over 1.5 gól")
-    
-    # 2. Csapatgólok (Favorit ereje alapján)
-    if fav == "HAZAI" and s_h > 1.7:
-        tips.append("Hazai csapat > 1.5 gól")
-    elif fav == "VENDÉG" and s_a > 1.7:
-        tips.append("Vendég csapat > 1.5 gól")
-    
-    # 3. BTTS (Ha nincs favorit, de magas az átlag és alacsony a védelmi fal)
-    if avg > 3.3 and fav == "Nincs":
-        tips.append("Mindkét csapat gólt szerez (BTTS)")
-        
-    return " | ".join(tips) if tips else "Over 1.5 gól"
+def save_json(file, data):
+    with open(file, 'w') as f:
+        json.dump(data, f)
 
-# ========= GITHUB SZINKRONIZÁCIÓ =========
+# (A korábbi Poisson, GitHub szinkron és statisztikai függvények maradnak...)
+
 def sync_to_github(file_list, commit_message):
     if not GITHUB_TOKEN: return
     try:
@@ -72,7 +59,34 @@ def sync_to_github(file_list, commit_message):
         subprocess.run(["git", "push", auth_url])
     except Exception as e: print(f"Git hiba: {e}")
 
-# ========= STATISZTIKAI ELEMZÉS =========
+def get_over_25_probability(avg_goals):
+    if avg_goals <= 0: return 0
+    p0 = math.exp(-avg_goals)
+    p1 = (avg_goals**1) * math.exp(-avg_goals) / 1
+    p2 = (avg_goals**2) * math.exp(-avg_goals) / 2
+    prob = (1 - (p0 + p1 + p2)) * 100
+    return max(0, min(100, prob))
+
+def generate_suggestions(avg, fav, s_h, s_a, prob):
+    tips = []
+    if prob > 75: tips.append("Over 2.5 gól")
+    elif prob > 60: tips.append("Over 1.5 gól")
+    if fav == "HAZAI" and s_h > 1.7: tips.append("Hazai csapat > 1.5 gól")
+    elif fav == "VENDÉG" and s_a > 1.7: tips.append("Vendég csapat > 1.5 gól")
+    if avg > 3.3 and fav == "Nincs": tips.append("BTTS")
+    return " | ".join(tips) if tips else "Over 1.5 gól"
+
+def send_telegram(message, file_path=None):
+    try:
+        if file_path:
+            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
+            with open(file_path, 'rb') as f:
+                requests.post(url, data={"chat_id": CHAT_ID, "caption": message, "parse_mode": "HTML"}, files={"document": f}, timeout=45)
+        else:
+            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+            requests.post(url, data={"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}, timeout=20)
+    except: pass
+
 def get_expert_stats(team_id):
     try:
         r = requests.get(f"{BASE_URL}/fixtures?team={team_id}&last=10", headers=HEADERS, timeout=12)
@@ -90,21 +104,10 @@ def get_expert_stats(team_id):
         return scored/10, conceded/10, clean_sheets, pts
     except: return 0, 0, 0, 0
 
-def send_telegram(message, file_path=None):
-    try:
-        if file_path:
-            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
-            with open(file_path, 'rb') as f:
-                requests.post(url, data={"chat_id": CHAT_ID, "caption": message, "parse_mode": "HTML"}, files={"document": f}, timeout=45)
-        else:
-            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-            requests.post(url, data={"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}, timeout=20)
-    except: pass
-
 def scan_next_day():
     tz = pytz.timezone(TIMEZONE)
     target = (datetime.now(tz) + timedelta(days=1)).strftime('%Y-%m-%d')
-    send_telegram(f"🔬 <b>Szakértői Analízis: {target}</b>\n(Tisztított tipprendszer)")
+    send_telegram(f"🔬 <b>Szakértői Analízis: {target}</b>")
     try:
         r = requests.get(f"{BASE_URL}/fixtures?date={target}", headers=HEADERS, timeout=30)
         matches = r.json().get("response", [])
@@ -116,41 +119,36 @@ def scan_next_day():
             total_avg = (h_sc + h_con + a_sc + a_con) / 2
             over_prob = get_over_25_probability(total_avg)
             cs_total = h_cs + a_cs
-            
             if over_prob > 60 and cs_total < 6:
                 fav = "Nincs"
                 if h_p >= a_p + 9 and h_sc > a_sc: fav = "HAZAI"
                 elif a_p >= h_p + 9 and a_sc > h_sc: fav = "VENDÉG"
-                
                 valid.append({
                     "ID": m['fixture']['id'],
                     "IDŐPONT": (datetime.fromisoformat(m['fixture']['date'][:19]).replace(tzinfo=pytz.utc)).astimezone(tz).strftime('%H:%M'),
                     "BAJNOKSÁG": m['league']['name'].upper(),
                     "MECCS": f"{m['teams']['home']['name']} - {m['teams']['away']['name']}",
                     "OVER 2.5 ESÉLY": f"{round(over_prob, 1)}%",
-                    "FAVORIT": fav,
-                    "CLEAN SHEET (20/x)": cs_total,
-                    "FORMA (H-V PONT)": f"{h_p}-{a_p}",
+                    "FAVORIT": fav, "CLEAN SHEET (20/x)": cs_total, "FORMA (H-V)": f"{h_p}-{a_p}",
                     "TIPP JAVASLAT": generate_suggestions(total_avg, fav, h_sc, a_sc, over_prob)
                 })
         if valid:
-            cache = {target: valid}
-            with open(CACHE_FILE, 'w') as f: json.dump(cache, f)
+            cache = load_json(CACHE_FILE, {})
+            cache[target] = valid
+            save_json(CACHE_FILE, cache)
             f_name = f"expert_lista_{target}.xlsx"
             pd.DataFrame(valid).to_excel(f_name, index=False)
-            send_telegram(f"✅ <b>Lista kész!</b>", f_name)
-            sync_to_github([CACHE_FILE, f_name], f"Expert lista: {target}")
+            send_telegram(f"✅ Lista kész!", f_name)
+            sync_to_github([CACHE_FILE, f_name], f"Update cache: {target}")
             if os.path.exists(f_name): os.remove(f_name)
     except Exception as e: send_telegram(f"⚠️ Hiba: {e}")
 
 def get_final_report():
     tz = pytz.timezone(TIMEZONE)
     yest = (datetime.now(tz) - timedelta(days=1)).strftime('%Y-%m-%d')
-    if not os.path.exists(CACHE_FILE): return
-    with open(CACHE_FILE, 'r') as f: cache = json.load(f)
+    cache = load_json(CACHE_FILE, {})
     matches = cache.get(yest, [])
     if not matches: return
-    
     send_telegram(f"📊 <b>Napi jelentés ({yest})</b>")
     final = []
     for m in matches:
@@ -165,7 +163,7 @@ def get_final_report():
     f_name = f"eredmenyek_{yest}.xlsx"
     pd.DataFrame(final).to_excel(f_name, index=False)
     send_telegram(f"📊 Tegnapi statisztika:", f_name)
-    sync_to_github([f_name], f"Összegzés: {yest}")
+    sync_to_github([f_name], f"Summary: {yest}")
 
 def main_loop():
     sent_ids = set(); tz = pytz.timezone(TIMEZONE)
@@ -173,23 +171,21 @@ def main_loop():
         now = datetime.now(tz)
         if now.hour == 16 and now.minute == 0: scan_next_day(); time.sleep(60)
         if now.hour == 0 and now.minute == 10: get_final_report(); sent_ids.clear(); time.sleep(60)
-        
         if 0 <= now.hour <= 23:
             try:
-                if os.path.exists(CACHE_FILE):
-                    with open(CACHE_FILE, 'r') as f: cache = json.load(f)
-                    today_m = cache.get(now.strftime('%Y-%m-%d'), [])
-                    if today_m:
-                        t_ids = [m['ID'] for m in today_m]
-                        r = requests.get(f"{BASE_URL}/fixtures?live=all", headers=HEADERS, timeout=10)
-                        for fx in r.json().get("response", []):
-                            mid = fx["fixture"]["id"]
-                            if mid in t_ids and mid not in sent_ids:
-                                min_ = fx["fixture"]["status"]["elapsed"] or 0
-                                h, a = (fx["goals"]["home"] or 0), (fx["goals"]["away"] or 0)
-                                if 25 < min_ < 65 and (h+a) < 2:
-                                    send_telegram(f"⚽ <b>EXPERT ÉLŐ: Over 1.5</b>\n{fx['teams']['home']['name']} - {fx['teams']['away']['name']}\n{h}-{a} ({min_}. perc)")
-                                    sent_ids.add(mid)
+                cache = load_json(CACHE_FILE, {})
+                today_m = cache.get(now.strftime('%Y-%m-%d'), [])
+                if today_m:
+                    t_ids = [m['ID'] for m in today_m]
+                    r = requests.get(f"{BASE_URL}/fixtures?live=all", headers=HEADERS, timeout=10)
+                    for fx in r.json().get("response", []):
+                        mid = fx["fixture"]["id"]
+                        if mid in t_ids and mid not in sent_ids:
+                            min_ = fx["fixture"]["status"]["elapsed"] or 0
+                            h, a = (fx["goals"]["home"] or 0), (fx["goals"]["away"] or 0)
+                            if 25 < min_ < 65 and (h+a) < 2:
+                                send_telegram(f"⚽ <b>EXPERT ÉLŐ: Over 1.5</b>\n{fx['teams']['home']['name']} - {fx['teams']['away']['name']}\n{h}-{a} ({min_}. perc)")
+                                sent_ids.add(mid)
             except: pass
         time.sleep(60)
 
