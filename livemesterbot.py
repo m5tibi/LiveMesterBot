@@ -169,7 +169,7 @@ def main_loop():
     sent_ids = set(); tz = pytz.timezone(TIMEZONE)
     while True:
         now = datetime.now(tz)
-        if now.hour == 16 and now.minute == 0: scan_next_day(); time.sleep(60)
+        if now.hour == 17 and now.minute == 0: scan_next_day(); time.sleep(60)
         if now.hour == 0 and now.minute == 10: get_final_report(); sent_ids.clear(); time.sleep(60)
         if 0 <= now.hour <= 23:
             try:
