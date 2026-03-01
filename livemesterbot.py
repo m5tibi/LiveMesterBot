@@ -8,7 +8,7 @@ from threading import Thread
 # ========= RENDER ÉBREN TARTÓ =========
 app = Flask('')
 @app.route('/')
-def home(): return "LiveMesterBot EXPERT v3.7: Origin Fix Aktív"
+def home(): return "LiveMesterBot EXPERT v3.8: Auto-Cleanup Aktív"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -29,37 +29,49 @@ TIMEZONE = "Europe/Budapest"
 
 CACHE_FILE = "foci_master_cache.json"
 
-# ========= GITHUB SZINKRONIZÁCIÓ (ORIGIN FIX) =========
+# ========= GITHUB SZINKRONIZÁCIÓ & TAKARÍTÁS =========
+def cleanup_old_files():
+    """Törli a 7 napnál régebbi Excel fájlokat a GitHub repóból."""
+    if not GITHUB_TOKEN: return
+    try:
+        limit_date = datetime.now() - timedelta(days=7)
+        deleted_any = False
+        
+        # Listázzuk a fájlokat a mappában
+        files = [f for f in os.listdir('.') if f.endswith('.xlsx')]
+        for f in files:
+            try:
+                # Kinyerjük a dátumot a fájlnévből (pl. expert_lista_2026-03-01.xlsx)
+                date_str = f.split('_')[-1].replace('.xlsx', '')
+                file_date = datetime.strptime(date_str, '%Y-%m-%d')
+                
+                if file_date < limit_date:
+                    print(f"Takarítás: {f} törlése...")
+                    subprocess.run(["git", "rm", f])
+                    deleted_any = True
+            except: continue
+            
+        if deleted_any:
+            sync_to_github([], "Automata takarítás: 7 napnál régebbi fájlok törölve")
+    except Exception as e: print(f"Takarítási hiba: {e}")
+
 def sync_to_github(file_list, commit_message):
-    if not GITHUB_TOKEN:
-        print("Nincs GITHUB_TOKEN beállítva.")
-        return
+    if not GITHUB_TOKEN: return
     try:
         subprocess.run(["git", "config", "--global", "user.email", "bot@livemester.com"])
         subprocess.run(["git", "config", "--global", "user.name", "LiveMesterBot"])
-        
         auth_url = REPO_URL.replace("https://", f"https://{GITHUB_TOKEN}@")
-        
-        # Origin kezelése
         subprocess.run(["git", "remote", "remove", "origin"], stderr=subprocess.DEVNULL)
         subprocess.run(["git", "remote", "add", "origin", auth_url])
         
         for f in file_list:
-            if os.path.exists(f): 
-                subprocess.run(["git", "add", f])
-        
-        subprocess.run(["git", "commit", "-m", commit_message])
-        result = subprocess.run(["git", "push", "origin", "HEAD:main", "--force"], capture_output=True, text=True)
-        
-        if result.returncode == 0:
-            print(f"Sikeres GitHub szinkronizáció: {commit_message}")
-        else:
-            print(f"Git Push hiba: {result.stderr}")
+            if os.path.exists(f): subprocess.run(["git", "add", f])
             
-    except Exception as e: 
-        print(f"Git hiba a szinkronizáció alatt: {e}")
+        subprocess.run(["git", "commit", "-m", commit_message])
+        subprocess.run(["git", "push", "origin", "HEAD:main", "--force"])
+    except Exception as e: print(f"Git hiba: {e}")
 
-# ========= MATEMATIKAI MODELLEZÉS =========
+# ========= MODELLEZÉS ÉS STATISZTIKA =========
 def get_over_25_probability(avg_goals):
     if avg_goals <= 0: return 0
     p0 = math.exp(-avg_goals)
@@ -76,7 +88,6 @@ def generate_suggestions(avg, fav, s_h, s_a, prob):
     if avg > 3.3 and fav == "Nincs": tips.append("BTTS")
     return " | ".join(tips) if tips else "Over 1.5 gól"
 
-# ========= STATISZTIKAI ELEMZÉS =========
 def get_expert_stats(team_id):
     try:
         r = requests.get(f"{BASE_URL}/fixtures?team={team_id}&last=10", headers=HEADERS, timeout=12)
@@ -106,7 +117,6 @@ def send_telegram(message, file_path=None):
     except: pass
 
 # ========= FŐ FELADATOK =========
-
 def scan_next_day():
     tz = pytz.timezone(TIMEZONE)
     target = (datetime.now(tz) + timedelta(days=1)).strftime('%Y-%m-%d')
@@ -146,32 +156,30 @@ def scan_next_day():
             pd.DataFrame(valid).to_excel(f_name, index=False)
             send_telegram(f"✅ Lista kész!", f_name)
             sync_to_github([CACHE_FILE, f_name], f"Update cache: {target}")
+            cleanup_old_files() # Takarítás minden szkenner után
     except Exception as e: send_telegram(f"⚠️ Hiba a szkennerben: {e}")
 
 def get_final_report():
     tz = pytz.timezone(TIMEZONE)
     yest = (datetime.now(tz) - timedelta(days=1)).strftime('%Y-%m-%d')
-    
     if GITHUB_TOKEN:
         auth_url = REPO_URL.replace("https://", f"https://{GITHUB_TOKEN}@")
-        subprocess.run(["git", "remote", "remove", "origin"], stderr=subprocess.DEVNULL)
-        subprocess.run(["git", "remote", "add", "origin", auth_url])
         subprocess.run(["git", "fetch", "origin", "main"])
         subprocess.run(["git", "checkout", "origin/main", CACHE_FILE], stderr=subprocess.DEVNULL)
     
     if not os.path.exists(CACHE_FILE):
-        send_telegram(f"📊 <b>Jelentés ({yest}):</b>\n⚠️ Cache fájl nem található.")
+        send_telegram(f"📊 <b>Jelentés ({yest}):</b>\n⚠️ Cache fájl hiányzik.")
         return
 
     try:
         with open(CACHE_FILE, 'r') as f: cache = json.load(f)
         matches = cache.get(yest, [])
     except:
-        send_telegram(f"📊 <b>Jelentés ({yest}):</b>\n⚠️ Cache fájl sérült.")
+        send_telegram(f"📊 <b>Jelentés ({yest}):</b>\n⚠️ Cache hiba.")
         return
     
     if not matches:
-        send_telegram(f"📊 <b>Jelentés ({yest}):</b>\n⚠️ Nincs mentett adat.")
+        send_telegram(f"📊 <b>Jelentés ({yest}):</b>\n⚠️ Nincs adat.")
         return
 
     send_telegram(f"📊 <b>Napi jelentés ({yest})</b>\nEredmények lekérése...")
@@ -188,16 +196,16 @@ def get_final_report():
 
     f_name = f"eredmenyek_{yest}.xlsx"
     pd.DataFrame(final).to_excel(f_name, index=False)
-    send_telegram(f"📈 A tegnapi nap kiértékelve.", f_name)
+    send_telegram(f"📈 Tegnapi nap kiértékelve.", f_name)
     sync_to_github([f_name], f"Summary: {yest}")
 
-# ========= IDŐZÍTŐ =========
+# ========= IDŐZÍTŐ CIKLUS =========
 def main_loop():
     sent_ids = set(); tz = pytz.timezone(TIMEZONE)
-    print("Bot elindult, várakozás a feladatokra...")
+    print("Bot eseményhurok elindult...")
     while True:
         now = datetime.now(tz)
-        if now.hour == 18 and now.minute == 0:
+        if now.hour == 16 and now.minute == 0:
             scan_next_day(); time.sleep(61)
         if now.hour == 0 and now.minute == 10:
             get_final_report(); sent_ids.clear(); time.sleep(61)
