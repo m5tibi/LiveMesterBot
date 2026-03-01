@@ -199,7 +199,7 @@ def main_loop():
     while True:
         now = datetime.now(tz)
         # 16:00 - Szkenner
-        if now.hour == 16:15 and now.minute == 0:
+        if now.hour == 17 and now.minute == 0:
             scan_next_day(); time.sleep(61)
         # 00:10 - Összegző
         if now.hour == 0 and now.minute == 10:
