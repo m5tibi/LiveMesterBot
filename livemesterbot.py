@@ -8,7 +8,7 @@ from threading import Thread
 # ========= RENDER ÉBREN TARTÓ =========
 app = Flask('')
 @app.route('/')
-def home(): return "LiveMesterBot EXPERT v3.6: Force Push Aktív"
+def home(): return "LiveMesterBot EXPERT v3.7: Origin Fix Aktív"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -29,7 +29,7 @@ TIMEZONE = "Europe/Budapest"
 
 CACHE_FILE = "foci_master_cache.json"
 
-# ========= GITHUB SZINKRONIZÁCIÓ (KÉNYSZERÍTETT) =========
+# ========= GITHUB SZINKRONIZÁCIÓ (ORIGIN FIX) =========
 def sync_to_github(file_list, commit_message):
     if not GITHUB_TOKEN:
         print("Nincs GITHUB_TOKEN beállítva.")
@@ -40,17 +40,15 @@ def sync_to_github(file_list, commit_message):
         
         auth_url = REPO_URL.replace("https://", f"https://{GITHUB_TOKEN}@")
         
-        # Távoli URL beállítása és fájlok hozzáadása
-        subprocess.run(["git", "remote", "set-url", "origin", auth_url])
+        # Origin kezelése
+        subprocess.run(["git", "remote", "remove", "origin"], stderr=subprocess.DEVNULL)
+        subprocess.run(["git", "remote", "add", "origin", auth_url])
         
         for f in file_list:
             if os.path.exists(f): 
                 subprocess.run(["git", "add", f])
         
-        # Commit készítése
         subprocess.run(["git", "commit", "-m", commit_message])
-        
-        # KÉNYSZERÍTETT feltöltés a távoli main ágra (HEAD:main)
         result = subprocess.run(["git", "push", "origin", "HEAD:main", "--force"], capture_output=True, text=True)
         
         if result.returncode == 0:
@@ -154,14 +152,15 @@ def get_final_report():
     tz = pytz.timezone(TIMEZONE)
     yest = (datetime.now(tz) - timedelta(days=1)).strftime('%Y-%m-%d')
     
-    # Éjféli Pull a GitHubról a friss adatokért (detached HEAD kezeléssel)
     if GITHUB_TOKEN:
         auth_url = REPO_URL.replace("https://", f"https://{GITHUB_TOKEN}@")
+        subprocess.run(["git", "remote", "remove", "origin"], stderr=subprocess.DEVNULL)
+        subprocess.run(["git", "remote", "add", "origin", auth_url])
         subprocess.run(["git", "fetch", "origin", "main"])
         subprocess.run(["git", "checkout", "origin/main", CACHE_FILE], stderr=subprocess.DEVNULL)
     
     if not os.path.exists(CACHE_FILE):
-        send_telegram(f"📊 <b>Jelentés ({yest}):</b>\n⚠️ Cache fájl nem található a kiértékeléshez.")
+        send_telegram(f"📊 <b>Jelentés ({yest}):</b>\n⚠️ Cache fájl nem található.")
         return
 
     try:
@@ -172,7 +171,7 @@ def get_final_report():
         return
     
     if not matches:
-        send_telegram(f"📊 <b>Jelentés ({yest}):</b>\n⚠️ Nincs mentett adat ehhez a naphoz.")
+        send_telegram(f"📊 <b>Jelentés ({yest}):</b>\n⚠️ Nincs mentett adat.")
         return
 
     send_telegram(f"📊 <b>Napi jelentés ({yest})</b>\nEredmények lekérése...")
@@ -192,19 +191,16 @@ def get_final_report():
     send_telegram(f"📈 A tegnapi nap kiértékelve.", f_name)
     sync_to_github([f_name], f"Summary: {yest}")
 
-# ========= IDŐZÍTŐ CIKLUS =========
+# ========= IDŐZÍTŐ =========
 def main_loop():
     sent_ids = set(); tz = pytz.timezone(TIMEZONE)
     print("Bot elindult, várakozás a feladatokra...")
     while True:
         now = datetime.now(tz)
-        # 16:00 - Szkenner
-        if now.hour == 17 and now.minute == 0:
+        if now.hour == 18 and now.minute == 0:
             scan_next_day(); time.sleep(61)
-        # 00:10 - Összegző
         if now.hour == 0 and now.minute == 10:
             get_final_report(); sent_ids.clear(); time.sleep(61)
-            
         time.sleep(30)
 
 if __name__ == "__main__":
