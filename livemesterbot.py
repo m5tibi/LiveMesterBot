@@ -8,7 +8,7 @@ from threading import Thread
 # ========= RENDER ÉBREN TARTÓ =========
 app = Flask('')
 @app.route('/')
-def home(): return "LiveMESTER v3.5: Kiertekeles Fix Aktivalva"
+def home(): return "LiveMesterBot EXPERT v3.5: GitHub & Report Fix Aktív"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -29,42 +29,52 @@ TIMEZONE = "Europe/Budapest"
 
 CACHE_FILE = "foci_master_cache.json"
 
-# ========= GITHUB SZINKRON =========
+# ========= GITHUB SZINKRONIZÁCIÓ (JAVÍTVA) =========
 def sync_to_github(file_list, commit_message):
     if not GITHUB_TOKEN: return
     try:
         subprocess.run(["git", "config", "--global", "user.email", "bot@livemester.com"])
         subprocess.run(["git", "config", "--global", "user.name", "LiveMesterBot"])
+        
         auth_url = REPO_URL.replace("https://", f"https://{GITHUB_TOKEN}@")
-        # Előbb egy pull, hogy ne legyen ütközés
-        subprocess.run(["git", "pull", auth_url])
+        
+        # Kényszerített ág-beállítás a detached HEAD ellen
+        subprocess.run(["git", "checkout", "-b", "main"], stderr=subprocess.DEVNULL)
+        subprocess.run(["git", "branch", "-M", "main"])
+        
+        # Pull, hogy szinkronban legyünk
+        subprocess.run(["git", "pull", auth_url, "main"], stderr=subprocess.DEVNULL)
+        
         for f in file_list:
             if os.path.exists(f): subprocess.run(["git", "add", f])
+        
         subprocess.run(["git", "commit", "-m", commit_message])
-        subprocess.run(["git", "push", auth_url])
+        result = subprocess.run(["git", "push", auth_url, "main"], capture_output=True, text=True)
+        
+        if result.returncode == 0:
+            print(f"Sikeres GitHub mentés: {commit_message}")
+        else:
+            print(f"Git Push hiba: {result.stderr}")
     except Exception as e: print(f"Git hiba: {e}")
 
-# ========= SEGÉDFÜGGVÉNYEK =========
-def load_json(file, default):
-    if os.path.exists(file):
-        try:
-            with open(file, 'r') as f: return json.load(f)
-        except: return default
-    return default
+# ========= MATEMATIKAI MODELLEZÉS =========
+def get_over_25_probability(avg_goals):
+    if avg_goals <= 0: return 0
+    p0 = math.exp(-avg_goals)
+    p1 = avg_goals * math.exp(-avg_goals)
+    p2 = (avg_goals**2) * math.exp(-avg_goals) / 2
+    return max(0, min(100, (1 - (p0 + p1 + p2)) * 100))
 
-def send_telegram(message, file_path=None):
-    try:
-        if file_path:
-            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
-            with open(file_path, 'rb') as f:
-                requests.post(url, data={"chat_id": CHAT_ID, "caption": message, "parse_mode": "HTML"}, files={"document": f}, timeout=45)
-        else:
-            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-            requests.post(url, data={"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}, timeout=20)
-    except: pass
+def generate_suggestions(avg, fav, s_h, s_a, prob):
+    tips = []
+    if prob > 75: tips.append("Over 2.5 gól")
+    elif prob > 60: tips.append("Over 1.5 gól")
+    if fav == "HAZAI" and s_h > 1.7: tips.append("Hazai csapat > 1.5 gól")
+    elif fav == "VENDÉG" and s_a > 1.7: tips.append("Vendég csapat > 1.5 gól")
+    if avg > 3.3 and fav == "Nincs": tips.append("BTTS")
+    return " | ".join(tips) if tips else "Over 1.5 gól"
 
-# (Expert statisztikák és Poisson függvények változatlanok...)
-
+# ========= STATISZTIKAI ELEMZÉS =========
 def get_expert_stats(team_id):
     try:
         r = requests.get(f"{BASE_URL}/fixtures?team={team_id}&last=10", headers=HEADERS, timeout=12)
@@ -82,21 +92,16 @@ def get_expert_stats(team_id):
         return s/10, c/10, cs, p
     except: return 0, 0, 0, 0
 
-def get_over_25_probability(avg):
-    if avg <= 0: return 0
-    p0 = math.exp(-avg)
-    p1 = avg * math.exp(-avg)
-    p2 = (avg**2) * math.exp(-avg) / 2
-    return max(0, min(100, (1 - (p0 + p1 + p2)) * 100))
-
-def generate_suggestions(avg, fav, s_h, s_a, prob):
-    tips = []
-    if prob > 75: tips.append("Over 2.5 gól")
-    elif prob > 60: tips.append("Over 1.5 gól")
-    if fav == "HAZAI" and s_h > 1.7: tips.append("Hazai csapat > 1.5 gól")
-    elif fav == "VENDÉG" and s_a > 1.7: tips.append("Vendég csapat > 1.5 gól")
-    if avg > 3.3 and fav == "Nincs": tips.append("BTTS")
-    return " | ".join(tips) if tips else "Over 1.5 gól"
+def send_telegram(message, file_path=None):
+    try:
+        if file_path:
+            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
+            with open(file_path, 'rb') as f:
+                requests.post(url, data={"chat_id": CHAT_ID, "caption": message, "parse_mode": "HTML"}, files={"document": f}, timeout=45)
+        else:
+            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+            requests.post(url, data={"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}, timeout=20)
+    except: pass
 
 # ========= FŐ FELADATOK =========
 
@@ -128,28 +133,35 @@ def scan_next_day():
                     "TIPP JAVASLAT": generate_suggestions(total_avg, fav, h_sc, a_sc, over_prob)
                 })
         if valid:
-            cache = load_json(CACHE_FILE, {})
+            cache = {}
+            if os.path.exists(CACHE_FILE):
+                with open(CACHE_FILE, 'r') as f: cache = json.load(f)
             cache[target] = valid
             with open(CACHE_FILE, 'w') as f: json.dump(cache, f)
             f_name = f"expert_lista_{target}.xlsx"
             pd.DataFrame(valid).to_excel(f_name, index=False)
             send_telegram(f"✅ Lista kész!", f_name)
-            sync_to_github([CACHE_FILE, f_name], f"Auto-update: {target}")
+            sync_to_github([CACHE_FILE, f_name], f"Update cache: {target}")
     except Exception as e: send_telegram(f"⚠️ Hiba a szkennerben: {e}")
 
 def get_final_report():
     tz = pytz.timezone(TIMEZONE)
     yest = (datetime.now(tz) - timedelta(days=1)).strftime('%Y-%m-%d')
     
-    # Próbáljuk frissíteni a cache-t a GitHubról, hátha a Render újraindult
+    # Éjféli Pull a GitHubról a friss adatokért
     if GITHUB_TOKEN:
-        subprocess.run(["git", "pull", REPO_URL.replace("https://", f"https://{GITHUB_TOKEN}@")])
+        auth_url = REPO_URL.replace("https://", f"https://{GITHUB_TOKEN}@")
+        subprocess.run(["git", "pull", auth_url, "main"])
     
-    cache = load_json(CACHE_FILE, {})
+    if not os.path.exists(CACHE_FILE):
+        send_telegram(f"📊 <b>Jelentés ({yest}):</b>\n⚠️ Cache fájl nem található.")
+        return
+
+    with open(CACHE_FILE, 'r') as f: cache = json.load(f)
     matches = cache.get(yest, [])
     
     if not matches:
-        send_telegram(f"📊 <b>Napi jelentés ({yest}):</b>\n⚠️ Nincs mentett meccs a kiértékeléshez.")
+        send_telegram(f"📊 <b>Jelentés ({yest}):</b>\n⚠️ Nincs mentett adat.")
         return
 
     send_telegram(f"📊 <b>Napi jelentés ({yest})</b>\nEredmények lekérése...")
@@ -166,20 +178,21 @@ def get_final_report():
 
     f_name = f"eredmenyek_{yest}.xlsx"
     pd.DataFrame(final).to_excel(f_name, index=False)
-    send_telegram(f"📈 A tegnapi nap lezárva. Eredmények a táblázatban.", f_name)
+    send_telegram(f"📈 A tegnapi nap kiértékelve.", f_name)
     sync_to_github([f_name], f"Summary: {yest}")
 
+# ========= IDŐZÍTŐ =========
 def main_loop():
-    tz = pytz.timezone(TIMEZONE)
+    sent_ids = set(); tz = pytz.timezone(TIMEZONE)
+    print("Bot elindult, várakozás a feladatokra...")
     while True:
         now = datetime.now(tz)
         # 16:00 - Szkenner
         if now.hour == 16 and now.minute == 0:
             scan_next_day(); time.sleep(61)
-        
         # 00:10 - Összegző
         if now.hour == 0 and now.minute == 10:
-            get_final_report(); time.sleep(61)
+            get_final_report(); sent_ids.clear(); time.sleep(61)
             
         time.sleep(30)
 
