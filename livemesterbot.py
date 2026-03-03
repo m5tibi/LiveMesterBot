@@ -8,7 +8,7 @@ from threading import Thread
 # ========= RENDER ÉBREN TARTÓ =========
 app = Flask('')
 @app.route('/')
-def home(): return "LiveMesterBot EXPERT v4.0.1: Sorrend Fix Aktív"
+def home(): return "LiveMesterBot EXPERT v4.1: Real Corners & Live Report Aktív"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -29,8 +29,9 @@ TIMEZONE = "Europe/Budapest"
 
 CACHE_FILE = "foci_master_cache.json"
 LIVE_HISTORY_FILE = "live_history.json"
+STATS_CACHE = {} # Csapat statisztikák átmeneti tárolása
 
-# ========= ALAP SEGÉDFÜGGVÉNYEK (ELŐRE HOZVA A HIBA ELLEN) =========
+# ========= ALAP SEGÉDFÜGGVÉNYEK =========
 
 def send_telegram(message, file_path=None):
     try:
@@ -67,13 +68,25 @@ def sync_to_github(file_list, commit_message):
         subprocess.run(["git", "push", "origin", "HEAD:main", "--force"])
     except: pass
 
-# ========= ANALITIKA ÉS STATISZTIKA =========
+# ========= STATISZTIKAI MOTOR =========
 
-def get_detailed_stats(team_id):
+def get_team_corner_avg(team_id, league_id, season):
+    ckey = f"{team_id}_{league_id}"
+    if ckey in STATS_CACHE: return STATS_CACHE[ckey]
+    try:
+        url = f"{BASE_URL}/teams/statistics?league={league_id}&season={season}&team={team_id}"
+        res = requests.get(url, headers=HEADERS, timeout=10).json().get('response', {})
+        avg = res.get('corners', {}).get('per_game', {}).get('total', 4.5)
+        val = float(avg) if avg else 4.5
+        STATS_CACHE[ckey] = val
+        return val
+    except: return 4.5
+
+def get_basic_stats(team_id):
     try:
         r = requests.get(f"{BASE_URL}/fixtures?team={team_id}&last=10", headers=HEADERS, timeout=12)
         res = r.json().get("response", [])
-        if not res: return 0, 0, 0, 0, 5.0
+        if not res: return 0, 0, 0, 0
         s, c, cs, p = 0, 0, 0, 0
         for g in res:
             is_h = g['teams']['home']['id'] == team_id
@@ -83,40 +96,44 @@ def get_detailed_stats(team_id):
             if (conceded or 0) == 0: cs += 1
             if (scored or 0) > (conceded or 0): p += 3
             elif (scored or 0) == (conceded or 0): p += 1
-        return s/10, c/10, cs, p, 5.0 # Szöglet fix 5.0 a teszthez
-    except: return 0, 0, 0, 0, 5.0
+        return s/10, c/10, cs, p
+    except: return 0, 0, 0, 0
 
 # ========= FŐ FELADATOK =========
 
 def scan_next_day():
     tz = pytz.timezone(TIMEZONE)
     target = (datetime.now(tz) + timedelta(days=1)).strftime('%Y-%m-%d')
-    send_telegram(f"🔬 <b>EXPERT v4.0.1 Analízis: {target}</b>")
+    send_telegram(f"🔬 <b>EXPERT v4.1 Analízis: {target}</b>\n(Valódi szögletstatisztikával)")
     try:
         r = requests.get(f"{BASE_URL}/fixtures?date={target}", headers=HEADERS, timeout=30)
         matches = r.json().get("response", [])
         valid = []
         for m in matches:
             if "friendly" in m['league']['name'].lower(): continue
+            lid, sea = m['league']['id'], m['league']['season']
             h_id, a_id = m['teams']['home']['id'], m['teams']['away']['id']
-            h_s, h_c, h_cs, h_p, h_corn = get_detailed_stats(h_id)
-            a_s, a_c, a_cs, a_p, a_corn = get_detailed_stats(a_id)
+            
+            h_s, h_c, h_cs, h_p = get_basic_stats(h_id)
+            a_s, a_c, a_cs, a_p = get_basic_stats(a_id)
+            h_corn = get_team_corner_avg(h_id, lid, sea)
+            a_corn = get_team_corner_avg(a_id, lid, sea)
             
             total_avg = (h_s + h_c + a_s + a_c) / 2
             over_prob = (1 - (math.exp(-total_avg) * (1 + total_avg + (total_avg**2)/2))) * 100
-            
             exp_corners = h_corn + a_corn
-            corner_limit = math.floor(exp_corners) - 0.5 if exp_corners > 8 else 8.5
+            
+            # BIZTONSÁGI SZÖGLET HATÁR: Várható - 1.5, majd kerekítés lefelé .5-re
+            corner_limit = math.floor(exp_corners - 1.0) - 0.5
 
             tips = []
             if over_prob > 78: tips.append("Over 2.5")
             elif over_prob > 65: tips.append("Over 1.5")
-            
             if h_s > 1.2 and a_s > 1.2:
                 if over_prob > 75: tips.append("Over 2.5 & BTTS")
                 elif total_avg > 2.8: tips.append("BTTS")
-            
-            if exp_corners >= 9.0: tips.append(f"Corners Over {corner_limit}")
+            if exp_corners >= 9.0:
+                tips.append(f"Corners Over {max(7.5, corner_limit)}")
 
             if tips:
                 valid.append({
@@ -125,20 +142,17 @@ def scan_next_day():
                     "BAJNOKSÁG": m['league']['name'].upper(),
                     "MECCS": f"{m['teams']['home']['name']} - {m['teams']['away']['name']}",
                     "OVER 2.5 ESÉLY": f"{round(over_prob, 1)}%",
-                    "VÁRHATÓ SZÖGLET": exp_corners,
+                    "VÁRHATÓ SZÖGLET": round(exp_corners, 1),
                     "TIPP JAVASLAT": " | ".join(tips)
                 })
-        
         if valid:
             cache = load_json(CACHE_FILE, {})
-            cache[target] = valid
-            save_json(CACHE_FILE, cache)
+            cache[target] = valid; save_json(CACHE_FILE, cache)
             f_name = f"expert_lista_{target}.xlsx"
             pd.DataFrame(valid).to_excel(f_name, index=False)
             send_telegram(f"✅ Lista kész!", f_name)
-            sync_to_github([CACHE_FILE, f_name], f"Expert Update: {target}")
-    except Exception as e: 
-        send_telegram(f"⚠️ Hiba a szkennerben: {e}")
+            sync_to_github([CACHE_FILE, f_name], f"v4.1 Update: {target}")
+    except Exception as e: send_telegram(f"⚠️ Hiba: {e}")
 
 def get_final_report():
     tz = pytz.timezone(TIMEZONE)
@@ -147,50 +161,55 @@ def get_final_report():
     matches = cache.get(yest, [])
     if not matches: return
 
-    send_telegram(f"📊 <b>Összetett jelentés ({yest})</b>")
+    send_telegram(f"📊 <b>Összetett jelentés ({yest})</b>\nKiértékelés folyamatban...")
     final = []
     for m in matches:
         try:
             r = requests.get(f"{BASE_URL}/fixtures?id={m['ID']}", headers=HEADERS).json().get("response", [])
             if r:
                 res = r[0]; h, a = res['goals']['home'], res['goals']['away']
+                # Szöglet statisztika kinyerése
+                c_total = 0
+                if 'statistics' in res:
+                    for s_set in res['statistics']:
+                        for item in s_set['statistics']:
+                            if item['type'] == 'Corner Kicks':
+                                c_total += (item['value'] or 0)
+                
                 m["EREDMÉNY"] = f"{h}-{a}"
                 m["GÓL SIKER"] = "✅" if (h+a) >= 2.5 else "❌"
                 m["BTTS SIKER"] = "✅" if (h or 0) > 0 and (a or 0) > 0 else "❌"
+                m["SZÖGLET ÖSSZ"] = c_total
+                m["SZÖGLET SIKER"] = "✅" if "Corners Over" in m["TIPP JAVASLAT"] and c_total > float(m["TIPP JAVASLAT"].split("Over ")[-1].split(" ")[0]) else "—"
             final.append(m); time.sleep(1)
+        except: continue
+
+    # LIVE TIPPEK ELLENŐRZÉSE
+    live_history = load_json(LIVE_HISTORY_FILE, [])
+    live_wins = 0
+    for lt in live_history:
+        try:
+            r = requests.get(f"{BASE_URL}/fixtures?id={lt['id']}", headers=HEADERS).json().get("response", [])
+            if r:
+                res = r[0]; h, a = (res['goals']['home'] or 0), (res['goals']['away'] or 0)
+                if (h + a) >= 2: live_wins += 1
         except: continue
 
     f_name = f"expert_report_{yest}.xlsx"
     pd.DataFrame(final).to_excel(f_name, index=False)
-    
-    live_history = load_json(LIVE_HISTORY_FILE, [])
-    total = len(live_history)
-    live_msg = f"📱 <b>LIVE TIPPEK ÖSSZESÍTŐ:</b>\n🎯 Ma küldött élő tippek száma: {total}"
+    live_msg = f"📱 <b>LIVE ÖSSZESÍTŐ:</b>\n🎯 Küldött: {len(live_history)}\n✅ Nyert: {live_wins}\n(Részletek az Excelben)"
     send_telegram(live_msg, f_name)
-    save_json(LIVE_HISTORY_FILE, [])
-    sync_to_github([f_name], f"Final Report: {yest}")
-
-# ========= IDŐZÍTŐ ÉS CIKLUS =========
+    save_json(LIVE_HISTORY_FILE, []); sync_to_github([f_name], f"Final: {yest}")
 
 def main_loop():
     sent_ids = set(); tz = pytz.timezone(TIMEZONE)
-    print("Bot eseményhurok elindult...")
     while True:
         now = datetime.now(tz)
-        # 18:15 - Szkenner teszt (Átírhatod tetszőlegesre)
-        if now.hour == 18 and now.minute == 20:
-            scan_next_day()
-            time.sleep(61)
-            
-        if now.hour == 0 and now.minute == 10:
-            get_final_report()
-            sent_ids.clear()
-            time.sleep(61)
+        if now.hour == 18 and now.minute ==45: scan_next_day(); time.sleep(61)
+        if now.hour == 0 and now.minute == 10: get_final_report(); sent_ids.clear(); time.sleep(61)
         
-        # Élő figyelés
         try:
-            cache = load_json(CACHE_FILE, {})
-            today_m = cache.get(now.strftime('%Y-%m-%d'), [])
+            today_m = load_json(CACHE_FILE, {}).get(now.strftime('%Y-%m-%d'), [])
             if today_m:
                 t_ids = [m['ID'] for m in today_m]
                 r = requests.get(f"{BASE_URL}/fixtures?live=all", headers=HEADERS, timeout=10)
@@ -202,9 +221,7 @@ def main_loop():
                         if 30 < min_ < 60 and (h+a) < 2:
                             send_telegram(f"⚽ <b>LIVE: Over 1.5</b>\n{fx['teams']['home']['name']} - {fx['teams']['away']['name']}\n{h}-{a} ({min_}. perc)")
                             sent_ids.add(mid)
-                            hst = load_json(LIVE_HISTORY_FILE, [])
-                            hst.append({"id": mid, "time": now.strftime('%H:%M')})
-                            save_json(LIVE_HISTORY_FILE, hst)
+                            hst = load_json(LIVE_HISTORY_FILE, []); hst.append({"id": mid}); save_json(LIVE_HISTORY_FILE, hst)
         except: pass
         time.sleep(40)
 
