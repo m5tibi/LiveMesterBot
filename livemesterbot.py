@@ -8,7 +8,7 @@ from threading import Thread
 # ========= RENDER ÉBREN TARTÓ =========
 app = Flask('')
 @app.route('/')
-def home(): return "LiveMesterBot EXPERT v4.0.1: Order Fix Aktív"
+def home(): return "LiveMesterBot EXPERT v4.0.1: Sorrend Fix Aktív"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -30,7 +30,7 @@ TIMEZONE = "Europe/Budapest"
 CACHE_FILE = "foci_master_cache.json"
 LIVE_HISTORY_FILE = "live_history.json"
 
-# ========= ALAP SEGÉDFÜGGVÉNYEK (ELŐRE HOZVA) =========
+# ========= ALAP SEGÉDFÜGGVÉNYEK (ELŐRE HOZVA A HIBA ELLEN) =========
 
 def send_telegram(message, file_path=None):
     try:
@@ -74,7 +74,7 @@ def get_detailed_stats(team_id):
         r = requests.get(f"{BASE_URL}/fixtures?team={team_id}&last=10", headers=HEADERS, timeout=12)
         res = r.json().get("response", [])
         if not res: return 0, 0, 0, 0, 5.0
-        s, c, cs, p, corn = 0, 0, 0, 0, 0
+        s, c, cs, p = 0, 0, 0, 0
         for g in res:
             is_h = g['teams']['home']['id'] == team_id
             scored = g['goals']['home'] if is_h else g['goals']['away']
@@ -83,8 +83,7 @@ def get_detailed_stats(team_id):
             if (conceded or 0) == 0: cs += 1
             if (scored or 0) > (conceded or 0): p += 3
             elif (scored or 0) == (conceded or 0): p += 1
-        # Szöglet átlag fix 5.0, amíg nincs mélyebb statisztika
-        return s/10, c/10, cs, p, 5.0
+        return s/10, c/10, cs, p, 5.0 # Szöglet fix 5.0 a teszthez
     except: return 0, 0, 0, 0, 5.0
 
 # ========= FŐ FELADATOK =========
@@ -104,7 +103,6 @@ def scan_next_day():
             a_s, a_c, a_cs, a_p, a_corn = get_detailed_stats(a_id)
             
             total_avg = (h_s + h_c + a_s + a_c) / 2
-            # Poisson-alapú valószínűség (Over 2.5)
             over_prob = (1 - (math.exp(-total_avg) * (1 + total_avg + (total_avg**2)/2))) * 100
             
             exp_corners = h_corn + a_corn
@@ -167,20 +165,20 @@ def get_final_report():
     
     live_history = load_json(LIVE_HISTORY_FILE, [])
     total = len(live_history)
-    live_msg = f"📱 <b>LIVE TIPPEK ÖSSZESÍTŐ:</b>\n🎯 Ma küldött élő tippek száma: {total}\n(Részletek az Excelben)"
+    live_msg = f"📱 <b>LIVE TIPPEK ÖSSZESÍTŐ:</b>\n🎯 Ma küldött élő tippek száma: {total}"
     send_telegram(live_msg, f_name)
     save_json(LIVE_HISTORY_FILE, [])
     sync_to_github([f_name], f"Final Report: {yest}")
 
-# ========= IDŐZÍTŐ =========
+# ========= IDŐZÍTŐ ÉS CIKLUS =========
 
 def main_loop():
     sent_ids = set(); tz = pytz.timezone(TIMEZONE)
     print("Bot eseményhurok elindult...")
     while True:
         now = datetime.now(tz)
-        # 18:00 - Szkenner (A teszt kedvéért most 18-ra hagyva)
-        if now.hour == 18 and now.minute == 15:
+        # 18:15 - Szkenner teszt (Átírhatod tetszőlegesre)
+        if now.hour == 18 and now.minute == 20:
             scan_next_day()
             time.sleep(61)
             
