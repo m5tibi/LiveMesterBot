@@ -203,8 +203,8 @@ def main_loop():
     sent_ids = set(); tz = pytz.timezone(TIMEZONE)
     while True:
         now = datetime.now(tz)
-        # Tesztelés 19:15-kor (javítva a SyntaxError)
-        if now.hour == 19 and now.minute == 15:
+        # Tesztelés 17:30-kor (javítva a SyntaxError)
+        if now.hour == 17 and now.minute == 30:
             scan_next_day()
             time.sleep(61)
             
