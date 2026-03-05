@@ -204,7 +204,7 @@ def main_loop():
     while True:
         now = datetime.now(tz)
         # Tesztelés 17:30-kor (javítva a SyntaxError)
-        if now.hour == 17 and now.minute == 30:
+        if now.hour == 17 and now.minute == 00:
             scan_next_day()
             time.sleep(61)
             
