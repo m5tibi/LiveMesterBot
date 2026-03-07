@@ -8,7 +8,7 @@ from threading import Thread
 # ========= RENDER ÉBREN TARTÓ =========
 app = Flask('')
 @app.route('/')
-def home(): return "LiveMesterBot EXPERT v4.5.1: Full Strict Mode & Live History Fix"
+def home(): return "LiveMesterBot EXPERT v4.6: Persistent Memory & Auto-Cleanup Active"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -29,7 +29,8 @@ TIMEZONE = "Europe/Budapest"
 
 CACHE_FILE = "foci_master_cache.json"
 LIVE_HISTORY_FILE = "live_history.json"
-TEAM_STATS_CACHE = {} 
+SENT_ALERTS_FILE = "sent_alerts.json"
+TEAM_STATS_CACHE_FILE = "team_stats_cache.json"
 
 # ========= SEGÉDFÜGGVÉNYEK =========
 
@@ -54,7 +55,7 @@ def load_json(file, default):
 def save_json(file, data):
     with open(file, 'w') as f: json.dump(data, f)
 
-def sync_to_github(file_list, commit_message):
+def sync_to_github(file_list, commit_message, delete_files=None):
     if not GITHUB_TOKEN: return
     try:
         subprocess.run(["git", "config", "--global", "user.email", "bot@livemester.com"])
@@ -62,16 +63,43 @@ def sync_to_github(file_list, commit_message):
         auth_url = REPO_URL.replace("https://", f"https://{GITHUB_TOKEN}@")
         subprocess.run(["git", "remote", "remove", "origin"], stderr=subprocess.DEVNULL)
         subprocess.run(["git", "remote", "add", "origin", auth_url])
+        
+        if delete_files:
+            for df in delete_files:
+                subprocess.run(["git", "rm", df], stderr=subprocess.DEVNULL)
+        
         for f in file_list:
             if os.path.exists(f): subprocess.run(["git", "add", f])
+            
         subprocess.run(["git", "commit", "-m", commit_message])
         subprocess.run(["git", "push", "origin", "HEAD:main", "--force"])
     except: pass
 
-# ========= STATISZTIKAI MOTOR (DEEP SCAN) =========
+# ========= TAKARÍTÁS (7 NAPNÁL RÉGEBBI EXCEL) =========
+
+def cleanup_old_files():
+    files_to_delete = []
+    now = datetime.now()
+    cutoff = now - timedelta(days=7)
+    
+    for f in os.listdir('.'):
+        if (f.startswith("expert_lista_") or f.startswith("report_")) and f.endswith(".xlsx"):
+            try:
+                # Fájlnévből dátum kinyerése (expert_lista_YYYY-MM-DD.xlsx)
+                date_str = f.split('_')[-1].split('.xlsx')[0]
+                file_date = datetime.strptime(date_str, '%Y-%m-%d')
+                if file_date < cutoff:
+                    os.remove(f)
+                    files_to_delete.append(f)
+            except: pass
+    return files_to_delete
+
+# ========= STATISZTIKAI MOTOR =========
 
 def get_team_detailed_data(team_id):
-    if team_id in TEAM_STATS_CACHE: return TEAM_STATS_CACHE[team_id]
+    cache = load_json(TEAM_STATS_CACHE_FILE, {})
+    if str(team_id) in cache: return cache[str(team_id)]
+    
     try:
         r = requests.get(f"{BASE_URL}/fixtures?team={team_id}&last=10", headers=HEADERS, timeout=12)
         matches = r.json().get("response", [])
@@ -94,16 +122,17 @@ def get_team_detailed_data(team_id):
             "avg_scored": s/10, "avg_conceded": c/10, "btts_trend": btts_count,
             "corner_avg": sum(corn_list)/len(corn_list) if len(corn_list) >= 3 else None
         }
-        TEAM_STATS_CACHE[team_id] = res
+        cache[str(team_id)] = res
+        save_json(TEAM_STATS_CACHE_FILE, cache)
         return res
     except: return None
 
-# ========= PRE-MATCH SZKENNER =========
+# ========= SZKENNER =========
 
 def scan_next_day():
     tz = pytz.timezone(TIMEZONE)
     target = (datetime.now(tz) + timedelta(days=1)).strftime('%Y-%m-%d')
-    send_telegram(f"🔬 <b>EXPERT v4.5.1 Deep Analízis: {target}</b>")
+    send_telegram(f"🔬 <b>EXPERT v4.6 Deep Scan: {target}</b>")
     try:
         r = requests.get(f"{BASE_URL}/fixtures?date={target}", headers=HEADERS, timeout=30)
         matches = r.json().get("response", [])
@@ -138,11 +167,11 @@ def scan_next_day():
             cache[target] = valid; save_json(CACHE_FILE, cache)
             f_name = f"expert_lista_{target}.xlsx"
             pd.DataFrame(valid).to_excel(f_name, index=False)
-            send_telegram(f"✅ Lista kész!", f_name)
-            sync_to_github([CACHE_FILE, f_name], f"v4.5.1 Update: {target}")
+            send_telegram(f"✅ Deep Scan kész!", f_name)
+            sync_to_github([CACHE_FILE, f_name, TEAM_STATS_CACHE_FILE], f"v4.6 Update: {target}")
     except Exception as e: send_telegram(f"⚠️ Hiba: {e}")
 
-# ========= ÉJFÉLI JELENTÉS (JAVÍTVA) =========
+# ========= JELENTÉS ÉS TAKARÍTÁS =========
 
 def get_final_report():
     tz = pytz.timezone(TIMEZONE)
@@ -163,14 +192,11 @@ def get_final_report():
                     for s_set in res['statistics']:
                         for it in s_set['statistics']:
                             if it['type'] == 'Corner Kicks': c_total += (it['value'] or 0)
-                m["EREDMÉNY"] = f"{h}-{a}"
-                m["GÓL SIKER"] = "✅" if (h+a) >= 2.5 else "❌"
-                m["BTTS SIKER"] = "✅" if (h or 0) > 0 and (a or 0) > 0 else "❌"
-                m["SZÖGLET ÖSSZ"] = c_total
+                m["EREDMÉNY"] = f"{h}-{a}"; m["GÓL SIKER"] = "✅" if (h+a) >= 2.5 else "❌"
+                m["BTTS SIKER"] = "✅" if (h or 0) > 0 and (a or 0) > 0 else "❌"; m["SZÖGLET ÖSSZ"] = c_total
             final.append(m); time.sleep(1)
         except: continue
 
-    # LIVE TIPPEK KIÉRTÉKELÉSE
     live_history = load_json(LIVE_HISTORY_FILE, [])
     live_wins = 0
     if live_history:
@@ -187,30 +213,38 @@ def get_final_report():
     f_name = f"report_{yest}.xlsx"
     pd.DataFrame(final).to_excel(f_name, index=False)
     send_telegram(live_msg, f_name)
-    save_json(LIVE_HISTORY_FILE, []) # Csak a jelentés után ürítjük
-    sync_to_github([f_name, LIVE_HISTORY_FILE], f"Final Report: {yest}")
+    
+    # Régi fájlok takarítása
+    deleted_files = cleanup_old_files()
+    save_json(LIVE_HISTORY_FILE, [])
+    save_json(SENT_ALERTS_FILE, []) # Éjfélkor nullázzuk a riasztásokat
+    
+    sync_to_github([f_name, LIVE_HISTORY_FILE, SENT_ALERTS_FILE], f"Final Report: {yest}", delete_files=deleted_files)
 
-# ========= FŐ CIKLUS ÉS SZIGORÚ LIVE =========
+# ========= FŐ CIKLUS =========
 
 def main_loop():
-    sent_ids = set(); tz = pytz.timezone(TIMEZONE)
+    tz = pytz.timezone(TIMEZONE)
+    print("Bot v4.6 elindult...")
     while True:
         now = datetime.now(tz)
         if now.hour == 16 and now.minute == 0: scan_next_day(); time.sleep(61)
-        if now.hour == 0 and now.minute == 10: get_final_report(); sent_ids.clear(); time.sleep(61)
+        if now.hour == 0 and now.minute == 10: get_final_report(); time.sleep(61)
         
         try:
             today_m = load_json(CACHE_FILE, {}).get(now.strftime('%Y-%m-%d'), [])
+            sent_alerts = load_json(SENT_ALERTS_FILE, [])
+            
             if today_m:
                 t_ids = [m['ID'] for m in today_m]
                 r = requests.get(f"{BASE_URL}/fixtures?live=all", headers=HEADERS, timeout=10)
                 for fx in r.json().get("response", []):
                     mid = fx["fixture"]["id"]
-                    if mid in t_ids and mid not in sent_ids:
+                    # CSAK AKKOR KÜLDJÜK, HA NINCS A SENT_ALERTS-BEN
+                    if mid in t_ids and str(mid) not in sent_alerts:
                         min_ = fx["fixture"]["status"]["elapsed"] or 0
                         h, a = (fx["goals"]["home"] or 0), (fx["goals"]["away"] or 0)
                         
-                        # SZIGORÚ LIVE SZŰRŐ
                         if ((35 <= min_ <= 42) or (50 <= min_ <= 65)) and (h+a) <= 1:
                             sr = requests.get(f"{BASE_URL}/fixtures/statistics?fixture={mid}", headers=HEADERS).json().get("response", [])
                             shots = 0
@@ -221,10 +255,12 @@ def main_loop():
                             
                             if shots >= 4:
                                 send_telegram(f"⚽ <b>STRICT LIVE: Over 1.5</b>\n{fx['teams']['home']['name']} - {fx['teams']['away']['name']}\n{h}-{a} ({min_}. perc)\n📈 Aktivitás: {shots} lövés")
-                                sent_ids.add(mid)
+                                sent_alerts.append(str(mid))
+                                save_json(SENT_ALERTS_FILE, sent_alerts)
+                                
                                 hst = load_json(LIVE_HISTORY_FILE, [])
                                 hst.append({"id": mid, "time": now.strftime('%H:%M')})
-                                save_json(LIVE_HISTORY_FILE, hst) # Azonnali mentés fájlba
+                                save_json(LIVE_HISTORY_FILE, hst)
         except: pass
         time.sleep(40)
 
