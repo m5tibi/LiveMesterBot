@@ -3,18 +3,14 @@ import json
 from datetime import datetime, timedelta, timezone
 
 import requests
-from supabase import create_client, Client  # supabase client
+from supabase import create_client, Client  # Supabase client
 
 
 def load_league_config():
     """
     Ligák listája JSON-ből vagy env változóból.
-    FOCI_MASTER_LEAGUES formátum (env-ben):
-
-    [
-      {"country": "England", "league_id": 39},
-      {"country": "Netherlands", "league_id": 88}
-    ]
+    Jelenleg a fetch_fixtures_for_date nem használja szűrésre,
+    de később még jól jöhet.
     """
     env_val = os.environ.get("FOCI_MASTER_LEAGUES")
     if env_val:
@@ -82,22 +78,15 @@ def get_tomorrow_date_str():
 
 def fetch_fixtures_for_date(api_key, base_url, leagues, date_str):
     """
-    1) Egyetlen nagy lekérés: aznapi összes meccs az API-Footballtól (date-only).
-    2) Utána Pythonban szűrünk a kiválasztott ligákra.
+    Minden aznapi fixture ligaszűrés nélkül.
+    A 'leagues' paramétert itt most nem használjuk szűrésre.
     """
     params = {
         "date": date_str,
-        # ha szeretnéd, betehetsz timezone-t is, pl.:
+        # opcionálisan:
         # "timezone": "Europe/Budapest",
     }
-    all_fixtures = api_get("/fixtures", params, api_key, base_url)
-
-    allowed_league_ids = {l["league_id"] for l in leagues}
-    fixtures = [
-        fx for fx in all_fixtures
-        if fx.get("league", {}).get("id") in allowed_league_ids
-    ]
-
+    fixtures = api_get("/fixtures", params, api_key, base_url)
     return fixtures
 
 
@@ -112,7 +101,7 @@ def fetch_team_last_matches(api_key, base_url, team_id, last_n=10):
 
 def compute_basic_stats_from_matches(matches, team_id):
     """
-    Nagyon egyszerű, de stabil stat-aggregátor.
+    Egyszerű, de stabil stat-aggregátor.
     Külön számoljuk a 'for' és 'against' gólokat a team_id alapján.
     """
     if not matches:
@@ -234,7 +223,7 @@ def fetch_odds_for_fixture(api_key, base_url, fixture_id):
                     if bet_name == "both teams to score" and value == "yes" and odds_out["btts"] is None:
                         odds_out["btts"] = odd
 
-                    # Itt bővíthető: team_goals, double chance, DNB, combo, ha a docs szerint be tudjuk azonosítani.
+                    # Itt bővíthető: team_goals, double chance, DNB, combo.
 
     return odds_out
 
