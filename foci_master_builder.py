@@ -333,7 +333,7 @@ def upload_to_supabase(output_file, date_str):
             path=object_path,
             file=data,
             file_options={"cache-control": "3600", "upsert": "true"},
-        )[web:56]
+        )
         print(f"✅ Feltöltve Supabase-re: {bucket}/{object_path}")
         print(res)
     except Exception as e:
