@@ -3,6 +3,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 import requests
+from supabase import create_client, Client
 
 
 def load_league_config():
@@ -23,10 +24,40 @@ def load_league_config():
 
     # Alap default, ha nincs beállítva env-ben
     return [
-        {"country": "England", "league_id": 39},   # Premier League
-        {"country": "Germany", "league_id": 78},   # Bundesliga
-        {"country": "Netherlands", "league_id": 88},  # Eredivisie
-        {"country": "Austria", "league_id": 218},  # Austrian Bundesliga
+        {"country": "England",   "league_id": 39},   # Premier League
+        {"country": "England",   "league_id": 40},   # Championship
+        {"country": "England",   "league_id": 41},   # League One
+        {"country": "England",   "league_id": 42},   # League Two,
+
+        {"country": "Germany",   "league_id": 78},   # Bundesliga
+        {"country": "Germany",   "league_id": 79},   # 2. Bundesliga
+
+        {"country": "Netherlands", "league_id": 88}, # Eredivisie
+        {"country": "Netherlands", "league_id": 89}, # Eerste Divisie
+
+        {"country": "Austria",   "league_id": 218},  # Bundesliga
+
+        {"country": "Scotland",  "league_id": 179},  # Premiership
+
+        {"country": "Spain",     "league_id": 140},  # La Liga
+        {"country": "Spain",     "league_id": 141},  # La Liga 2
+
+        {"country": "Italy",     "league_id": 135},  # Serie A
+        {"country": "Italy",     "league_id": 136},  # Serie B
+
+        {"country": "France",    "league_id": 61},   # Ligue 1
+        {"country": "France",    "league_id": 62},   # Ligue 2
+
+        {"country": "Turkey",    "league_id": 203},  # Super Lig
+
+        {"country": "Portugal",  "league_id": 94},   # Primeira Liga
+
+        {"country": "Belgium",   "league_id": 144},  # Pro League
+
+        {"country": "Switzerland","league_id": 207}, # Super League
+
+        {"country": "Norway",    "league_id": 103},  # Eliteserien
+        {"country": "Sweden",    "league_id": 67},   # Allsvenskan
     ]
 
 
@@ -112,7 +143,6 @@ def compute_basic_stats_from_matches(matches, team_id):
             g_for = goals_away
             g_against = goals_home
         else:
-            # elvileg nem kéne ide jutni
             g_for = 0
             g_against = 0
 
@@ -202,7 +232,7 @@ def fetch_odds_for_fixture(api_key, base_url, fixture_id):
 def simple_model_probabilities(home_stats, away_stats):
     """
     Egyszerű modell: a múltbeli arányok átlagából becsült P-k.
-    Ez csak alap – a Safe Over / Biztonsági Index logikát én fogom ráépíteni elemzéskor.
+    Ez csak alap – a Safe Over / Biztonsági Index logikát később, nálam számoljuk.
     """
     def avg_or_none(a, b):
         vals = [v for v in [a, b] if v is not None]
@@ -238,7 +268,7 @@ def simple_model_probabilities(home_stats, away_stats):
 def derive_profile(home_stats, away_stats, model_probs):
     """
     A/B/C/D profil + safe_over_candidate + avoid_outright flag.
-    Ezeket a Prompt-2/3/6 logikájára hangoltam.[file:3][file:4][file:6]
+    Prompt-2/3/6 logikájához hangolt.[file:3][file:4][file:6]
     """
     hf = home_stats["goals_for_per_match"] or 0
     ha = home_stats["goals_against_per_match"] or 0
@@ -248,7 +278,6 @@ def derive_profile(home_stats, away_stats, model_probs):
     avg_goals_for = (hf + af) / 2
     avg_goals_against = (ha + aa) / 2
 
-    # Profil besorolás – később finomíthatjuk.
     if avg_goals_for >= 2.0 and avg_goals_against >= 1.5:
         profile = "B"  # kaotikus, gólgazdag
     elif avg_goals_for >= 2.0 and avg_goals_against <= 1.0:
@@ -261,11 +290,9 @@ def derive_profile(home_stats, away_stats, model_probs):
     safe_over_candidate = False
     avoid_outright = False
 
-    # Safe Over jelölt – Prompt-6: min. 75–80% over, erős támadás, gyenge védelem.[file:6]
     if model_probs["over15"] is not None and model_probs["over15"] >= 0.75:
         safe_over_candidate = True
 
-    # C/D profilon kerüljük a sima 1X2-t, inkább gl-piac vagy teljes tiltás.[file:3][file:4]
     if profile in ("C", "D"):
         avoid_outright = True
 
@@ -274,6 +301,34 @@ def derive_profile(home_stats, away_stats, model_probs):
         "safe_over_candidate": safe_over_candidate,
         "avoid_outright": avoid_outright,
     }
+
+
+def upload_to_supabase(output_file, date_str):
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_KEY")
+    bucket = os.environ.get("FOCI_MASTER_BUCKET", "foci-master")
+
+    if not url or not key:
+        print("⚠️ Supabase URL vagy KEY hiányzik, nem töltök fel.")
+        return
+
+    supabase: Client = create_client(url, key)
+
+    object_path = f"{date_str}/foci_master_{date_str}.json"
+
+    with open(output_file, "r", encoding="utf-8") as f:
+        data = f.read().encode("utf-8")
+
+    try:
+        res = supabase.storage.from_(bucket).upload(
+            path=object_path,
+            file=data,
+            file_options={"cache-control": "3600", "upsert": "true"},
+        )
+        print(f"✅ Feltöltve Supabase-re: {bucket}/{object_path}")
+        print(res)
+    except Exception as e:
+        print(f"❌ Supabase feltöltési hiba: {e}")
 
 
 def main():
@@ -305,25 +360,18 @@ def main():
         home_name = teams["home"]["name"]
         away_name = teams["away"]["name"]
 
-        # Home stats
         if home_id not in team_stats_cache:
             home_matches = fetch_team_last_matches(api_key, base_url, home_id, last_n=10)
             team_stats_cache[home_id] = compute_basic_stats_from_matches(home_matches, home_id)
         home_stats = team_stats_cache[home_id]
 
-        # Away stats
         if away_id not in team_stats_cache:
             away_matches = fetch_team_last_matches(api_key, base_url, away_id, last_n=10)
             team_stats_cache[away_id] = compute_basic_stats_from_matches(away_matches, away_id)
         away_stats = team_stats_cache[away_id]
 
-        # Modell valószínűségek
         model_probs = simple_model_probabilities(home_stats, away_stats)
-
-        # Odds
         odds = fetch_odds_for_fixture(api_key, base_url, fixture_id)
-
-        # Profil
         derived = derive_profile(home_stats, away_stats, model_probs)
 
         fixture_obj = {
@@ -348,7 +396,7 @@ def main():
                 "home_last10_xg_against_per_match": home_stats["xg_against_per_match"],
                 "away_last10_xg_for_per_match": away_stats["xg_for_per_match"],
                 "away_last10_xg_against_per_match": away_stats["xg_against_per_match"],
-                "avg_corners_per_match": home_stats["avg_corners"],  # egyszerűsítés
+                "avg_corners_per_match": home_stats["avg_corners"],
             },
             "model_probabilities": model_probs,
             "odds": odds,
@@ -365,7 +413,9 @@ def main():
     with open(output_file, "w", encoding="utf-8") as f:
         json.dump(output, f, ensure_ascii=False, indent=2)
 
-    print(f"✅ Kész: {output_file}, meccsek száma: {len(fixtures_out)}")
+    print(f"✅ Kész lokálisan: {output_file}, meccsek száma: {len(fixtures_out)}")
+
+    upload_to_supabase(output_file, date_str)
 
 
 if __name__ == "__main__":
