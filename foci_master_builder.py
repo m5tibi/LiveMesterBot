@@ -3,7 +3,8 @@ import json
 from datetime import datetime, timedelta, timezone
 
 import requests
-from supabase import create_client, Client
+from supabase import create_client, Client  # supabase client[web:73][web:130]
+
 
 def load_league_config():
     """
@@ -80,18 +81,16 @@ def get_tomorrow_date_str():
 
 def fetch_fixtures_for_date(api_key, base_url, leagues, date_str):
     """
-    1) Egyetlen nagy lekérés: aznapi összes meccs az API-Footballtól (date-only).
+    1) Egyetlen nagy lekérés: aznapi összes meccs az API-Footballtól (date-only).[web:53][web:83]
     2) Utána Pythonban szűrünk a kiválasztott ligákra.
     """
-    # 1) Minden fixture adott napra (league nélkül)
     params = {
         "date": date_str,
-        # ha szeretnél, betehetsz "timezone": "Europe/Budapest"-et is
+        # ha szeretnéd, betehetsz timezone-t is, pl.:
         # "timezone": "Europe/Budapest",
     }
     all_fixtures = api_get("/fixtures", params, api_key, base_url)
 
-    # 2) Szűrés a saját ligalistád alapján
     allowed_league_ids = {l["league_id"] for l in leagues}
     fixtures = [
         fx for fx in all_fixtures
@@ -162,7 +161,7 @@ def compute_basic_stats_from_matches(matches, team_id):
             over15 += 1
         if total_goals >= 3:
             over25 += 1
-        if goals_home > 0 and goals_away > 0:
+        if total_goals >= 1 and goals_home > 0 and goals_away > 0:
             btts += 1
 
         # Ha használsz corners/statistics endpointot, itt kell kiegészíteni.
@@ -186,7 +185,7 @@ def compute_basic_stats_from_matches(matches, team_id):
 def fetch_odds_for_fixture(api_key, base_url, fixture_id):
     params = {
         "fixture": fixture_id,
-        "bookmaker": 8  # pl. Bet365 – pontosítsd docs alapján
+        "bookmaker": 8  # pl. Bet365 – pontosítsd docs alapján[web:53]
     }
     resp = api_get("/odds", params, api_key, base_url)
 
@@ -204,7 +203,7 @@ def fetch_odds_for_fixture(api_key, base_url, fixture_id):
         "combo_x2_over15": None,
     }
 
-    # api-football odds struktúra: league->fixture->bookmakers->bets->values
+    # api-football odds struktúra: league->fixture->bookmakers->bets->values[web:53]
     for item in resp:
         for bookmaker in item.get("bookmakers", []):
             for bet in bookmaker.get("bets", []):
@@ -334,7 +333,7 @@ def upload_to_supabase(output_file, date_str):
             path=object_path,
             file=data,
             file_options={"cache-control": "3600", "upsert": "true"},
-        )
+        )[web:56]
         print(f"✅ Feltöltve Supabase-re: {bucket}/{object_path}")
         print(res)
     except Exception as e:
