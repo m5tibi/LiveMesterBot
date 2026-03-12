@@ -210,7 +210,9 @@ def fetch_odds_for_fixture(api_key, base_url, fixture_id):
             for bet in bookmaker.get("bets", []):
                 bet_name = (bet.get("name") or "").lower()
                 for val in bet.get("values", []):
-                    value = (val.get("value") or "").lower()
+                    raw_value = val.get("value")
+                    value = str(raw_value).lower() if raw_value is not None else ""
+
                     odd = None
                     if val.get("odd") is not None:
                         try:
