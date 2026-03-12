@@ -3,13 +3,14 @@ import json
 from datetime import datetime, timedelta, timezone
 
 import requests
-from supabase import create_client, Client  # supabase client[web:73][web:130]
+from supabase import create_client, Client  # supabase client
 
 
 def load_league_config():
     """
     Ligák listája JSON-ből vagy env változóból.
     FOCI_MASTER_LEAGUES formátum (env-ben):
+
     [
       {"country": "England", "league_id": 39},
       {"country": "Netherlands", "league_id": 88}
@@ -81,7 +82,7 @@ def get_tomorrow_date_str():
 
 def fetch_fixtures_for_date(api_key, base_url, leagues, date_str):
     """
-    1) Egyetlen nagy lekérés: aznapi összes meccs az API-Footballtól (date-only).[web:53][web:83]
+    1) Egyetlen nagy lekérés: aznapi összes meccs az API-Footballtól (date-only).
     2) Utána Pythonban szűrünk a kiválasztott ligákra.
     """
     params = {
@@ -161,7 +162,7 @@ def compute_basic_stats_from_matches(matches, team_id):
             over15 += 1
         if total_goals >= 3:
             over25 += 1
-        if total_goals >= 1 and goals_home > 0 and goals_away > 0:
+        if goals_home > 0 and goals_away > 0:
             btts += 1
 
         # Ha használsz corners/statistics endpointot, itt kell kiegészíteni.
@@ -185,7 +186,7 @@ def compute_basic_stats_from_matches(matches, team_id):
 def fetch_odds_for_fixture(api_key, base_url, fixture_id):
     params = {
         "fixture": fixture_id,
-        "bookmaker": 8  # pl. Bet365 – pontosítsd docs alapján[web:53]
+        "bookmaker": 8  # pl. Bet365 – pontosítsd docs alapján
     }
     resp = api_get("/odds", params, api_key, base_url)
 
@@ -203,7 +204,7 @@ def fetch_odds_for_fixture(api_key, base_url, fixture_id):
         "combo_x2_over15": None,
     }
 
-    # api-football odds struktúra: league->fixture->bookmakers->bets->values[web:53]
+    # api-football odds struktúra: league->fixture->bookmakers->bets->values
     for item in resp:
         for bookmaker in item.get("bookmakers", []):
             for bet in bookmaker.get("bets", []):
@@ -277,7 +278,7 @@ def simple_model_probabilities(home_stats, away_stats):
 def derive_profile(home_stats, away_stats, model_probs):
     """
     A/B/C/D profil + safe_over_candidate + avoid_outright flag.
-    Prompt-2/3/6 logikájához hangolt.[file:3][file:4][file:6]
+    Prompt-2/3/6 logikájához hangolt.
     """
     hf = home_stats["goals_for_per_match"] or 0
     ha = home_stats["goals_against_per_match"] or 0
