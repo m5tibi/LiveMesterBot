@@ -3,7 +3,8 @@ import json
 from datetime import datetime, timedelta, timezone
 
 import requests
-from supabase import create_client, Client
+from supabase import create_client
+from supabase.lib.client import Client
 
 
 def load_league_config():
