@@ -3,4 +3,4 @@ requests
 pytz
 pandas
 openpyxl
-supabase-py>=2.0.0
+supabase
