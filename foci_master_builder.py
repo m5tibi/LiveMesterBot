@@ -79,16 +79,25 @@ def get_tomorrow_date_str():
 
 
 def fetch_fixtures_for_date(api_key, base_url, leagues, date_str):
-    fixtures = []
-    for league in leagues:
-        league_id = league["league_id"]
-        params = {
-            "date": date_str,
-            "league": league_id,
-            # "season": datetime.now().year  # kivéve, hogy az API maga válassza a szezont
-        }
-        resp = api_get("/fixtures", params, api_key, base_url)
-        fixtures.extend(resp)
+    """
+    1) Egyetlen nagy lekérés: aznapi összes meccs az API-Footballtól (date-only).
+    2) Utána Pythonban szűrünk a kiválasztott ligákra.
+    """
+    # 1) Minden fixture adott napra (league nélkül)
+    params = {
+        "date": date_str,
+        # ha szeretnél, betehetsz "timezone": "Europe/Budapest"-et is
+        # "timezone": "Europe/Budapest",
+    }
+    all_fixtures = api_get("/fixtures", params, api_key, base_url)
+
+    # 2) Szűrés a saját ligalistád alapján
+    allowed_league_ids = {l["league_id"] for l in leagues}
+    fixtures = [
+        fx for fx in all_fixtures
+        if fx.get("league", {}).get("id") in allowed_league_ids
+    ]
+
     return fixtures
 
 
