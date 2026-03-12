@@ -85,7 +85,7 @@ def fetch_fixtures_for_date(api_key, base_url, leagues, date_str):
         params = {
             "date": date_str,
             "league": league_id,
-            "season": datetime.now().year  # ha kell, átírhatod fixre
+            # "season": datetime.now().year  # kivéve, hogy az API maga válassza a szezont
         }
         resp = api_get("/fixtures", params, api_key, base_url)
         fixtures.extend(resp)
