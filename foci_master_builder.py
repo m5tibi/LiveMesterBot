@@ -173,9 +173,13 @@ def compute_basic_stats_from_matches(matches, team_id):
 
 
 def fetch_odds_for_fixture(api_key, base_url, fixture_id):
+    """
+    Oddsok lehúzása egy fixture-re API-Footballból.
+    Fókusz: Over 1.5, Over 2.5, BTTS Yes.
+    """
     params = {
         "fixture": fixture_id,
-        "bookmaker": 8  # pl. Bet365 – pontosítsd docs alapján
+        "bookmaker": 8  # pl. Bet365 – API-Football docs szerint
     }
     resp = api_get("/odds", params, api_key, base_url)
 
@@ -193,11 +197,11 @@ def fetch_odds_for_fixture(api_key, base_url, fixture_id):
         "combo_x2_over15": None,
     }
 
-    # api-football odds struktúra: league->fixture->bookmakers->bets->values
     for item in resp:
         for bookmaker in item.get("bookmakers", []):
             for bet in bookmaker.get("bets", []):
                 bet_name = (bet.get("name") or "").lower()
+
                 for val in bet.get("values", []):
                     raw_value = val.get("value")
                     value = str(raw_value).lower() if raw_value is not None else ""
@@ -206,24 +210,25 @@ def fetch_odds_for_fixture(api_key, base_url, fixture_id):
                     if val.get("odd") is not None:
                         try:
                             odd = float(val["odd"])
-                        except ValueError:
-                            pass
+                        except (ValueError, TypeError):
+                            odd = None
 
                     if odd is None:
                         continue
 
-                    # Összgól piacok
-                    if bet_name == "total goals":
-                        if value == "over 1.5" and odds_out["over15"] is None:
+                    # Összgól piacok (Total Goals / Goals Over/Under)
+                    if "total" in bet_name or "goals" in bet_name:
+                        if value in ("over 1.5", "o 1.5") and odds_out["over15"] is None:
                             odds_out["over15"] = odd
-                        if value == "over 2.5" and odds_out["over25"] is None:
+                        if value in ("over 2.5", "o 2.5") and odds_out["over25"] is None:
                             odds_out["over25"] = odd
 
-                    # BTTS
-                    if bet_name == "both teams to score" and value == "yes" and odds_out["btts"] is None:
-                        odds_out["btts"] = odd
+                    # BTTS Yes
+                    if "both teams to score" in bet_name and value in ("yes", "y"):
+                        if odds_out["btts"] is None:
+                            odds_out["btts"] = odd
 
-                    # Itt bővíthető: team_goals, double chance, DNB, combo.
+                    # Itt később bővíthető: team goals, double chance, DNB, kombók.
 
     return odds_out
 
