@@ -357,7 +357,7 @@ def generate_multi_market_tips_from_fixtures(
         maybe_add_tip(
             market="over15",
             p=p_o15,
-            o=o15,
+            o=o_o15,
             min_ev=0.025,
             min_p=0.60,
             max_p=0.85,
