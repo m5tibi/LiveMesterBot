@@ -4,14 +4,10 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 from supabase import create_client, Client  # Supabase client
+from typing import List, Dict, Any
 
 
 def load_league_config():
-    """
-    Ligák listája JSON-ből vagy env változóból.
-    Jelenleg a fetch_fixtures_for_date nem használja szűrésre,
-    de később még jól jöhet.
-    """
     env_val = os.environ.get("FOCI_MASTER_LEAGUES")
     if env_val:
         try:
@@ -19,49 +15,34 @@ def load_league_config():
         except Exception:
             pass
 
-    # Alap default, ha nincs beállítva env-ben
     return [
-        {"country": "England",   "league_id": 39},   # Premier League
-        {"country": "England",   "league_id": 40},   # Championship
-        {"country": "England",   "league_id": 41},   # League One
-        {"country": "England",   "league_id": 42},   # League Two,
-
-        {"country": "Germany",   "league_id": 78},   # Bundesliga
-        {"country": "Germany",   "league_id": 79},   # 2. Bundesliga
-
-        {"country": "Netherlands", "league_id": 88}, # Eredivisie
-        {"country": "Netherlands", "league_id": 89}, # Eerste Divisie
-
-        {"country": "Austria",   "league_id": 218},  # Bundesliga
-
-        {"country": "Scotland",  "league_id": 179},  # Premiership
-
-        {"country": "Spain",     "league_id": 140},  # La Liga
-        {"country": "Spain",     "league_id": 141},  # La Liga 2
-
-        {"country": "Italy",     "league_id": 135},  # Serie A
-        {"country": "Italy",     "league_id": 136},  # Serie B
-
-        {"country": "France",    "league_id": 61},   # Ligue 1
-        {"country": "France",    "league_id": 62},   # Ligue 2
-
-        {"country": "Turkey",    "league_id": 203},  # Super Lig
-
-        {"country": "Portugal",  "league_id": 94},   # Primeira Liga
-
-        {"country": "Belgium",   "league_id": 144},  # Pro League
-
-        {"country": "Switzerland","league_id": 207}, # Super League
-
-        {"country": "Norway",    "league_id": 103},  # Eliteserien
-        {"country": "Sweden",    "league_id": 67},   # Allsvenskan
+        {"country": "England",   "league_id": 39},
+        {"country": "England",   "league_id": 40},
+        {"country": "England",   "league_id": 41},
+        {"country": "England",   "league_id": 42},
+        {"country": "Germany",   "league_id": 78},
+        {"country": "Germany",   "league_id": 79},
+        {"country": "Netherlands", "league_id": 88},
+        {"country": "Netherlands", "league_id": 89},
+        {"country": "Austria",   "league_id": 218},
+        {"country": "Scotland",  "league_id": 179},
+        {"country": "Spain",     "league_id": 140},
+        {"country": "Spain",     "league_id": 141},
+        {"country": "Italy",     "league_id": 135},
+        {"country": "Italy",     "league_id": 136},
+        {"country": "France",    "league_id": 61},
+        {"country": "France",    "league_id": 62},
+        {"country": "Turkey",    "league_id": 203},
+        {"country": "Portugal",  "league_id": 94},
+        {"country": "Belgium",   "league_id": 144},
+        {"country": "Switzerland","league_id": 207},
+        {"country": "Norway",    "league_id": 103},
+        {"country": "Sweden",    "league_id": 67},
     ]
 
 
 def api_get(path, params, api_key, base_url):
-    headers = {
-        "x-apisports-key": api_key
-    }
+    headers = {"x-apisports-key": api_key}
     url = base_url.rstrip("/") + "/" + path.lstrip("/")
     resp = requests.get(url, headers=headers, params=params, timeout=25)
     resp.raise_for_status()
@@ -70,20 +51,14 @@ def api_get(path, params, api_key, base_url):
 
 
 def get_tomorrow_date_str():
-    # UTC-ben dolgozunk (Render is ezt használja).
     today_utc = datetime.now(timezone.utc).date()
     tomorrow = today_utc + timedelta(days=1)
     return tomorrow.strftime("%Y-%m-%d")
 
 
 def fetch_fixtures_for_date(api_key, base_url, leagues, date_str):
-    """
-    Minden aznapi fixture ligaszűrés nélkül.
-    A 'leagues' paramétert itt most nem használjuk szűrésre.
-    """
     params = {
         "date": date_str,
-        # opcionálisan:
         # "timezone": "Europe/Budapest",
     }
     fixtures = api_get("/fixtures", params, api_key, base_url)
@@ -91,19 +66,12 @@ def fetch_fixtures_for_date(api_key, base_url, leagues, date_str):
 
 
 def fetch_team_last_matches(api_key, base_url, team_id, last_n=10):
-    params = {
-        "team": team_id,
-        "last": last_n
-    }
+    params = {"team": team_id, "last": last_n}
     resp = api_get("/fixtures", params, api_key, base_url)
     return resp
 
 
 def compute_basic_stats_from_matches(matches, team_id):
-    """
-    Egyszerű, de stabil stat-aggregátor.
-    Külön számoljuk a 'for' és 'against' gólokat a team_id alapján.
-    """
     if not matches:
         return {
             "goals_for_per_match": None,
@@ -123,6 +91,7 @@ def compute_basic_stats_from_matches(matches, team_id):
     btts = 0
     total_corners = 0
     corners_count = 0
+    n = 0
 
     for m in matches:
         goals_home = m["goals"]["home"]
@@ -145,6 +114,7 @@ def compute_basic_stats_from_matches(matches, team_id):
 
         total_for += g_for
         total_against += g_against
+        n += 1
 
         total_goals = goals_home + goals_away
         if total_goals >= 2:
@@ -154,12 +124,6 @@ def compute_basic_stats_from_matches(matches, team_id):
         if goals_home > 0 and goals_away > 0:
             btts += 1
 
-        # Ha használsz corners/statistics endpointot, itt kell kiegészíteni.
-        # Most placeholder (None).
-        # total_corners += ...
-        # corners_count += 1
-
-    n = len(matches)
     return {
         "goals_for_per_match": total_for / n if n else None,
         "goals_against_per_match": total_against / n if n else None,
@@ -173,13 +137,9 @@ def compute_basic_stats_from_matches(matches, team_id):
 
 
 def fetch_odds_for_fixture(api_key, base_url, fixture_id):
-    """
-    Oddsok lehúzása egy fixture-re API-Footballból.
-    Fókusz: Over 1.5, Over 2.5, BTTS Yes.
-    """
     params = {
         "fixture": fixture_id,
-        "bookmaker": 8  # pl. Bet365 – API-Football docs szerint
+        "bookmaker": 8  # Bet365
     }
     resp = api_get("/odds", params, api_key, base_url)
 
@@ -212,32 +172,23 @@ def fetch_odds_for_fixture(api_key, base_url, fixture_id):
                             odd = float(val["odd"])
                         except (ValueError, TypeError):
                             odd = None
-
                     if odd is None:
                         continue
 
-                    # Összgól piacok (Total Goals / Goals Over/Under)
                     if "total" in bet_name or "goals" in bet_name:
                         if value in ("over 1.5", "o 1.5") and odds_out["over15"] is None:
                             odds_out["over15"] = odd
                         if value in ("over 2.5", "o 2.5") and odds_out["over25"] is None:
                             odds_out["over25"] = odd
 
-                    # BTTS Yes
                     if "both teams to score" in bet_name and value in ("yes", "y"):
                         if odds_out["btts"] is None:
                             odds_out["btts"] = odd
-
-                    # Itt később bővíthető: team goals, double chance, DNB, kombók.
 
     return odds_out
 
 
 def simple_model_probabilities(home_stats, away_stats):
-    """
-    Egyszerű modell: a múltbeli arányok átlagából becsült P-k.
-    Ez csak alap – a Safe Over / Biztonsági Index logikát később, nálam számoljuk.
-    """
     def avg_or_none(a, b):
         vals = [v for v in [a, b] if v is not None]
         return sum(vals) / len(vals) if vals else None
@@ -270,10 +221,6 @@ def simple_model_probabilities(home_stats, away_stats):
 
 
 def derive_profile(home_stats, away_stats, model_probs):
-    """
-    A/B/C/D profil + safe_over_candidate + avoid_outright flag.
-    Prompt-2/3/6 logikájához hangolt.
-    """
     hf = home_stats["goals_for_per_match"] or 0
     ha = home_stats["goals_against_per_match"] or 0
     af = away_stats["goals_for_per_match"] or 0
@@ -283,13 +230,13 @@ def derive_profile(home_stats, away_stats, model_probs):
     avg_goals_against = (ha + aa) / 2
 
     if avg_goals_for >= 2.0 and avg_goals_against >= 1.5:
-        profile = "B"  # kaotikus, gólgazdag
+        profile = "B"
     elif avg_goals_for >= 2.0 and avg_goals_against <= 1.0:
-        profile = "A"  # domináns támadó
+        profile = "A"
     elif avg_goals_for <= 1.2 and avg_goals_against <= 1.2:
-        profile = "C"  # taktikai, kevés gól
+        profile = "C"
     else:
-        profile = "D"  # vegyes / bizonytalan / derby
+        profile = "D"
 
     safe_over_candidate = False
     avoid_outright = False
@@ -307,18 +254,17 @@ def derive_profile(home_stats, away_stats, model_probs):
     }
 
 
-def upload_to_supabase(output_file, date_str):
+def upload_to_supabase(output_file, date_str, bucket_key="foci-master"):
     url = os.environ.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_KEY")
-    bucket = os.environ.get("FOCI_MASTER_BUCKET", "foci-master")
+    bucket = os.environ.get("FOCI_MASTER_BUCKET", bucket_key)
 
     if not url or not key:
         print("⚠️ Supabase URL vagy KEY hiányzik, nem töltök fel.")
         return
 
     supabase: Client = create_client(url, key)
-
-    object_path = f"{date_str}/foci_master_{date_str}.json"
+    object_path = f"{date_str}/{os.path.basename(output_file)}"
 
     with open(output_file, "r", encoding="utf-8") as f:
         data = f.read().encode("utf-8")
@@ -335,6 +281,183 @@ def upload_to_supabase(output_file, date_str):
         print(f"❌ Supabase feltöltési hiba: {e}")
 
 
+def generate_multi_market_tips_from_fixtures(
+    fixtures: List[Dict[str, Any]],
+    max_tips: int = 10,
+    allowed_leagues: List[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Több piac (over15, over25, btts) tip generálása finomhangolt szűrőkkel.
+    - over15: EV >= 2.5%, p 0.60–0.85, odds 1.35–1.80
+    - over25: EV >= 4%,   p 0.48–0.68, odds 1.75–2.70
+    - btts:   EV >= 5%,   p 0.48–0.68, odds 1.80–3.20
+    Meccsenként max 1 tipp (a legmagasabb EV-jű).
+    """
+
+    raw_candidates: List[Dict[str, Any]] = []
+
+    for fx in fixtures:
+        league_name = fx.get("league")
+        country = fx.get("country")
+        if allowed_leagues is not None and league_name not in allowed_leagues:
+            continue
+
+        probs = fx.get("model_probabilities", {}) or {}
+        odds = fx.get("odds", {}) or {}
+        derived = fx.get("derived_profile", {}) or {}
+        safe_flag = bool(derived.get("safe_over_candidate"))
+
+        fixture_id = fx.get("fixture_id")
+        kickoff = fx.get("kickoff")
+        home = fx.get("home_team")
+        away = fx.get("away_team")
+
+        def maybe_add_tip(
+            market: str,
+            p: float,
+            o: float,
+            min_ev: float,
+            min_p: float,
+            max_p: float,
+            min_odds: float,
+            max_odds: float,
+        ):
+            if p is None or o is None:
+                return
+            try:
+                o_f = float(o)
+            except (ValueError, TypeError):
+                return
+
+            ev = o_f * p - 1.0
+            if ev < min_ev:
+                return
+            if p < min_p or p > max_p:
+                return
+            if o_f < min_odds or o_f > max_odds:
+                return
+
+            raw_candidates.append({
+                "fixture_id": fixture_id,
+                "league": league_name,
+                "country": country,
+                "kickoff": kickoff,
+                "home_team": home,
+                "away_team": away,
+                "market": market,
+                "model_p": p,
+                "odds": o_f,
+                "ev": ev,
+                "safe_over_candidate": safe_flag,
+            })
+
+        # Over 1.5
+        p_o15 = probs.get("over15")
+        o_o15 = odds.get("over15")
+        maybe_add_tip(
+            market="over15",
+            p=p_o15,
+            o=o15,
+            min_ev=0.025,
+            min_p=0.60,
+            max_p=0.85,
+            min_odds=1.35,
+            max_odds=1.80,
+        )
+
+        # Over 2.5
+        p_o25 = probs.get("over25")
+        o_o25 = odds.get("over25")
+        maybe_add_tip(
+            market="over25",
+            p=p_o25,
+            o=o_o25,
+            min_ev=0.04,
+            min_p=0.48,
+            max_p=0.68,
+            min_odds=1.75,
+            max_odds=2.70,
+        )
+
+        # BTTS Yes
+        p_btts = probs.get("btts")
+        o_btts = odds.get("btts")
+        maybe_add_tip(
+            market="btts_yes",
+            p=p_btts,
+            o=o_btts,
+            min_ev=0.05,
+            min_p=0.48,
+            max_p=0.68,
+            min_odds=1.80,
+            max_odds=3.20,
+        )
+
+    # Meccsenként max 1 tipp: válasszuk a legjobb EV-t
+    best_per_fixture: Dict[Any, Dict[str, Any]] = {}
+    for cand in raw_candidates:
+        fid = cand["fixture_id"]
+        if fid not in best_per_fixture:
+            best_per_fixture[fid] = cand
+        else:
+            if cand["ev"] > best_per_fixture[fid]["ev"]:
+                best_per_fixture[fid] = cand
+
+    deduped_candidates = list(best_per_fixture.values())
+
+    # Rendezés: safe_over_candidate előnyben, majd EV szerint csökkenő
+    deduped_candidates.sort(
+        key=lambda x: (x["safe_over_candidate"], x["ev"]),
+        reverse=True,
+    )
+
+    return deduped_candidates[:max_tips]
+
+
+def send_telegram_message_with_json(
+    token: str,
+    chat_id: str,
+    tips_payload: Dict[str, Any],
+):
+    if not token or not chat_id:
+        print("⚠️ TELEGRAM_BOT_TOKEN vagy TELEGRAM_CHAT_ID hiányzik, nem küldök üzenetet.")
+        return
+
+    tips = tips_payload.get("tips", [])
+    date_str = tips_payload.get("date")
+    header = f"📊 Foci automata tippek – {date_str}\nÖsszes tipp: {len(tips)}\n\n"
+
+    lines = []
+    for t in tips:
+        kickoff = t.get("kickoff")
+        league = t.get("league")
+        home = t.get("home_team")
+        away = t.get("away_team")
+        market = t.get("market")
+        odds = t.get("odds")
+        ev = t.get("ev")
+        p = t.get("model_p")
+        line = (
+            f"{kickoff} | {league}\n"
+            f"{home} – {away}\n"
+            f"Piac: {market}, odds: {odds:.2f}, p: {p:.2f}, EV: {ev*100:.1f}%\n"
+        )
+        lines.append(line)
+
+    text = header + "\n".join(lines) if lines else header + "Nincs mai tipp a szűrők alapján."
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text}
+    try:
+        resp = requests.post(url, json=payload, timeout=15)
+        if resp.status_code == 200:
+            print("✅ Telegram üzenet elküldve.")
+        else:
+            print(f"❌ Telegram hiba: {resp.status_code} – {resp.text}")
+    except Exception as e:
+        print(f"❌ Telegram küldési kivétel: {e}")
+
+
 def main():
     api_key = os.environ.get("API_FOOTBALL_KEY")
     base_url = os.environ.get("API_FOOTBALL_BASE_URL", "https://v3.football.api-sports.io")
@@ -349,8 +472,8 @@ def main():
 
     fixtures_raw = fetch_fixtures_for_date(api_key, base_url, leagues, date_str)
 
-    team_stats_cache = {}
-    fixtures_out = []
+    team_stats_cache: Dict[int, Dict[str, Any]] = {}
+    fixtures_out: List[Dict[str, Any]] = []
 
     for fx in fixtures_raw:
         fixture = fx["fixture"]
@@ -419,7 +542,38 @@ def main():
 
     print(f"✅ Kész lokálisan: {output_file}, meccsek száma: {len(fixtures_out)}")
 
-    upload_to_supabase(output_file, date_str)
+    upload_to_supabase(output_file, date_str, bucket_key="foci-master")
+
+    # --- AUTOMATA TIPPLISTA GENERÁLÁS ---
+    allowed_leagues = None  # ha akarsz, itt szűrj liganévre listával
+    tips = generate_multi_market_tips_from_fixtures(
+        fixtures_out,
+        max_tips=10,
+        allowed_leagues=allowed_leagues,
+    )
+
+    tips_output_file = f"tips_{date_str}.json"
+    tips_payload = {
+        "date": date_str,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "max_tips": 10,
+        "tips": tips,
+    }
+    with open(tips_output_file, "w", encoding="utf-8") as f:
+        json.dump(tips_payload, f, ensure_ascii=False, indent=2)
+
+    print(f"✅ Tippfájl kész: {tips_output_file}, tippek száma: {len(tips)}")
+
+    upload_to_supabase(tips_output_file, date_str, bucket_key="foci-tips")
+
+    telegram_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    telegram_chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+
+    send_telegram_message_with_json(
+        token=telegram_token,
+        chat_id=telegram_chat_id,
+        tips_payload=tips_payload,
+    )
 
 
 if __name__ == "__main__":
