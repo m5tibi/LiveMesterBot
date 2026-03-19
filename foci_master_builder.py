@@ -195,7 +195,14 @@ def simple_model_probabilities(home_stats, away_stats):
 
     over15 = avg_or_none(home_stats["over15_rate"], away_stats["over15_rate"])
     over25 = avg_or_none(home_stats["over25_rate"], away_stats["over25_rate"])
-    btts = avg_or_none(home_stats["btts_rate"], away_stats["btts_rate"])
+    raw_btts = avg_or_none(home_stats["btts_rate"], away_stats["btts_rate"])
+
+    # BTTS kalibráció: shrinkelés egy globális átlag felé (pl. 0.52)
+    global_btts_avg = 0.52
+    if raw_btts is not None:
+        btts = 0.5 * raw_btts + 0.5 * global_btts_avg
+    else:
+        btts = None
 
     def goal_prob_from_avg(avg):
         if avg is None:
