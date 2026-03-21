@@ -228,7 +228,7 @@ def main_loop():
     print("Bot v4.6 elindult...")
     while True:
         now = datetime.now(tz)
-        if now.hour == 20 and now.minute == 10: scan_next_day(); time.sleep(61)
+        if now.hour == 17 and now.minute == 00: scan_next_day(); time.sleep(61)
         if now.hour == 0 and now.minute == 10: get_final_report(); time.sleep(61)
         
         try:
