@@ -116,12 +116,12 @@ def compute_basic_stats_from_matches(matches, team_id):
         total_against += g_against
         n += 1
 
-        total_goals = goals_home + goals_away
+        total_goals = (goals_home or 0) + (goals_away or 0)
         if total_goals >= 2:
             over15 += 1
         if total_goals >= 3:
             over25 += 1
-        if goals_home > 0 and goals_away > 0:
+        if (goals_home or 0) > 0 and (goals_away or 0) > 0:
             btts += 1
 
     return {
@@ -189,7 +189,7 @@ def fetch_odds_for_fixture(api_key, base_url, fixture_id):
 
 
 def run_monte_carlo_simulation(home_expectancy, away_expectancy, simulations=10000):
-    """Poisson-eloszlás alapú Monte Carlo szimuláció a pontosabb valószínűségekért."""
+    """Poisson-eloszlás alapú Monte Carlo szimuláció a valószínűségek pontosításához."""
     h_goals = np.random.poisson(max(0.1, home_expectancy), simulations)
     a_goals = np.random.poisson(max(0.1, away_expectancy), simulations)
     total_goals = h_goals + a_goals
@@ -211,7 +211,7 @@ def simple_model_probabilities(home_stats, away_stats):
     
     mc_results = run_monte_carlo_simulation(h_lambda, a_lambda)
 
-    # Hibrid valószínűség (40% statisztika, 60% Monte Carlo)
+    # Hibrid valószínűség számítás: 40% múltbeli statisztika, 60% Monte Carlo szimuláció.
     def hybrid_prob(hist_rate, mc_rate):
         if hist_rate is None: return mc_rate
         return (hist_rate * 0.4) + (mc_rate * 0.6)
@@ -340,37 +340,47 @@ def generate_multi_market_tips_from_fixtures(
 
 
 def send_telegram_message_with_json(token, chat_id, tips_payload):
-    if not token or not chat_id: return
-    tips, date_str = tips_payload.get("tips", []), tips_payload.get("date")
+    """Telegram üzenet küldése szebb formázással és magyar nyelvű tippekkel."""
+    if not token or not chat_id:
+        print("⚠️ Telegram token vagy chat_id hiányzik.")
+        return
+
+    tips = tips_payload.get("tips", [])
+    date_str = tips_payload.get("date")
+    
     header = f"📊 <b>Foci Automata Tippek – {date_str}</b>\n━━━━━━━━━━━━━━━━━━━━\n"
     lines = []
     for t in tips:
         emoji = "🔥" if t.get("safe_over_candidate") else "⚽"
         time_str = t.get("kickoff")[11:16] if t.get("kickoff") else "--:--"
         
-        # Piac nevének szépítése
-        market_name = t['market'].upper()
+        # Piac nevének magyarítása a kérésed szerint.
+        market_name = (t.get("market") or "").upper()
         if market_name == "OVER15":
-            market_name = "Gólszám 1,5 felett"
+            market_display = "Gólszám 1,5 felett"
         elif market_name == "OVER25":
-            market_name = "Gólszám 2,5 felett"
+            market_display = "Gólszám 2,5 felett"
         elif market_name == "BTTS_YES":
-            market_name = "Mindkét csapat szerez gólt: IGEN"
+            market_display = "Mindkét csapat szerez gólt: IGEN"
+        else:
+            market_display = market_name
 
         lines.append(
-            f"{emoji} <b>{t['home_team']} – {t['away_team']}</b>\n"
-            f"🏆 {t['league']} | ⏰ {time_str}\n"
-            f"🎯 Tipp: <code>{market_name}</code> @ <b>{t['odds']:.2f}</b>\n"
-            f"📈 P: {t['model_p']*100:.1f}% | EV: {t['ev']*100:.1f}%\n"
+            f"{emoji} <b>{t.get('home_team')} – {t.get('away_team')}</b>\n"
+            f"🏆 {t.get('league')} | ⏰ {time_str}\n"
+            f"🎯 Tipp: <code>{market_display}</code>\n"
+            f"📈 P: {t.get('model_p', 0)*100:.1f}% | EV: {t.get('ev', 0)*100:.1f}%\n"
             f"━━━━━━━━━━━━━━━━━━━━"
         )
     
-    text = header + "\n".join(lines) if lines else header + "<i>Nincs mai tipp.</i>"
+    text = header + "\n".join(lines) if lines else header + "<i>Nincs mai tipp a szűrők alapján.</i>"
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=15)
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
+    try:
+        requests.post(url, json=payload, timeout=15)
         print("✅ Telegram üzenet elküldve.")
     except Exception as e:
-        print(f"❌ Telegram küldési hiba: {e}")
+        print(f"❌ Telegram hiba: {e}")
 
 
 def main():
