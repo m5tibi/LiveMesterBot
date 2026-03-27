@@ -340,31 +340,34 @@ def generate_multi_market_tips_from_fixtures(
 
 
 def send_telegram_message_with_json(token, chat_id, tips_payload):
-    if not token or not chat_id:
-        print("⚠️ Telegram token/chat_id hiányzik.")
-        return
-
-    tips = tips_payload.get("tips", [])
-    date_str = tips_payload.get("date")
-    
+    if not token or not chat_id: return
+    tips, date_str = tips_payload.get("tips", []), tips_payload.get("date")
     header = f"📊 <b>Foci Automata Tippek – {date_str}</b>\n━━━━━━━━━━━━━━━━━━━━\n"
     lines = []
     for t in tips:
         emoji = "🔥" if t.get("safe_over_candidate") else "⚽"
         time_str = t.get("kickoff")[11:16] if t.get("kickoff") else "--:--"
+        
+        # Piac nevének szépítése
+        market_name = t['market'].upper()
+        if market_name == "OVER15":
+            market_name = "Gólszám 1,5 felett"
+        elif market_name == "OVER25":
+            market_name = "Gólszám 2,5 felett"
+        elif market_name == "BTTS_YES":
+            market_name = "Mindkét csapat szerez gólt: IGEN"
+
         lines.append(
             f"{emoji} <b>{t['home_team']} – {t['away_team']}</b>\n"
             f"🏆 {t['league']} | ⏰ {time_str}\n"
-            f"🎯 Tipp: <code>{t['market'].upper()}</code> @ <b>{t['odds']:.2f}</b>\n"
+            f"🎯 Tipp: <code>{market_name}</code> @ <b>{t['odds']:.2f}</b>\n"
             f"📈 P: {t['model_p']*100:.1f}% | EV: {t['ev']*100:.1f}%\n"
             f"━━━━━━━━━━━━━━━━━━━━"
         )
     
-    text = header + "\n".join(lines) if lines else header + "<i>Nincs mai tipp a szűrők alapján.</i>"
+    text = header + "\n".join(lines) if lines else header + "<i>Nincs mai tipp.</i>"
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
-    try:
-        requests.post(url, json=payload, timeout=15)
+    requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=15)
         print("✅ Telegram üzenet elküldve.")
     except Exception as e:
         print(f"❌ Telegram küldési hiba: {e}")
