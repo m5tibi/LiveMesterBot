@@ -9,13 +9,13 @@ from typing import List, Dict, Any
 import pytz
 
 # ========= KONFIGURÁCIÓ =========
-API_KEY = os.environ.get("FOOTBALL_API_KEY")
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+API_KEY = os.environ.get("API_FOOTBALL_KEY")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
 BASE_URL = "https://v3.football.api-sports.io"
-HEADERS = {"x-apisports-key": API_KEY}
+HEADERS = {"x-apisports-key": API_FOOTBALL_KEY}
 HISTORY_FILE = "automated_tips_history.json"
 
 def load_league_config():
