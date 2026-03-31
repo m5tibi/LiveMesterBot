@@ -8,7 +8,7 @@ from threading import Thread
 # ========= RENDER ÉBREN TARTÓ =========
 app = Flask('')
 @app.route('/')
-def home(): return "LiveMesterBot EXPERT v5.5: Logfile"
+def home(): return "LiveMesterBot EXPERT v5.6: Dashboard"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -34,6 +34,7 @@ SENT_ALERTS_FILE      = "sent_alerts.json"
 TEAM_STATS_CACHE_FILE = "team_stats_cache.json"
 ODDS_DRIFT_FILE       = "odds_drift.json"
 LOG_FILE              = "bot.log"
+BACKTEST_FILE         = "backtest.json"
 
 # ========= LIVE LÖVÉS-SZŰRÉS KÜSZÖBÖK =========
 SHOTS_ON_GOAL_MIN   = 3
@@ -50,32 +51,20 @@ LIVE_MIN_EV = 0.02
 DRIFT_DROP_THRESHOLD = 0.05
 DRIFT_RISE_THRESHOLD = 0.05
 
-# ========= LOGGER INICIALIZÁLÁS =========
-#
-# Szintek:  DEBUG < INFO < WARNING < ERROR
-# bot.log formátum: 2026-03-31 18:15:42 | INFO    | [main_loop] Live scan fut...
-# Minden indításnál append mód – nem írja felül a régit.
-# A napi jelentés elküldi a log fájlt Telegramon, majd archivaing.
+# ========= LOGGER =========
 
 def setup_logger():
     logger = logging.getLogger("livemester")
     logger.setLevel(logging.DEBUG)
-    if logger.handlers:  # Ne duplikáljonák restart után
+    if logger.handlers:
         return logger
-    fmt = logging.Formatter(
-        fmt="%(asctime)s | %(levelname)-7s | %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
-    )
-    # Fájl handler – append mód, UTF-8
+    fmt = logging.Formatter(fmt="%(asctime)s | %(levelname)-7s | %(message)s",
+                             datefmt="%Y-%m-%d %H:%M:%S")
     fh = logging.FileHandler(LOG_FILE, encoding="utf-8", mode="a")
-    fh.setLevel(logging.DEBUG)
-    fh.setFormatter(fmt)
-    # Konzol handler – Render logban is látszik
+    fh.setLevel(logging.DEBUG); fh.setFormatter(fmt)
     ch = logging.StreamHandler()
-    ch.setLevel(logging.INFO)
-    ch.setFormatter(fmt)
-    logger.addHandler(fh)
-    logger.addHandler(ch)
+    ch.setLevel(logging.INFO); ch.setFormatter(fmt)
+    logger.addHandler(fh); logger.addHandler(ch)
     return logger
 
 log = setup_logger()
@@ -87,7 +76,8 @@ def send_telegram(message, file_path=None):
         if file_path:
             url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
             with open(file_path, 'rb') as f:
-                requests.post(url, data={"chat_id": CHAT_ID, "caption": message, "parse_mode": "HTML"}, files={"document": f}, timeout=45)
+                requests.post(url, data={"chat_id": CHAT_ID, "caption": message, "parse_mode": "HTML"},
+                              files={"document": f}, timeout=45)
         else:
             url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
             requests.post(url, data={"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}, timeout=20)
@@ -113,21 +103,19 @@ def sync_to_github(file_list, commit_message, delete_files=None):
         subprocess.run(["git", "remote", "remove", "origin"], stderr=subprocess.DEVNULL)
         subprocess.run(["git", "remote", "add", "origin", auth_url])
         if delete_files:
-            for df in delete_files:
-                subprocess.run(["git", "rm", df], stderr=subprocess.DEVNULL)
+            for df in delete_files: subprocess.run(["git", "rm", df], stderr=subprocess.DEVNULL)
         for f in file_list:
             if os.path.exists(f): subprocess.run(["git", "add", f])
         subprocess.run(["git", "commit", "-m", commit_message])
         subprocess.run(["git", "push", "origin", "HEAD:main", "--force"])
         log.debug(f"[github] Szinkronizálva: {commit_message}")
     except Exception as e:
-        log.error(f"[github] Szinkronizációs hiba: {e}")
+        log.error(f"[github] Hiba: {e}")
 
-# ========= SENT ALERTS – RESTART-BIZTOS DE-DUPLIKÁCIÓ =========
+# ========= SENT ALERTS =========
 
 def load_sent_alerts(date_str):
-    data = load_json(SENT_ALERTS_FILE, {})
-    return data.get(date_str, [])
+    return load_json(SENT_ALERTS_FILE, {}).get(date_str, [])
 
 def save_sent_alert(date_str, fixture_id):
     data = load_json(SENT_ALERTS_FILE, {})
@@ -144,29 +132,15 @@ def cleanup_sent_alerts(today_str):
     tz = pytz.timezone(TIMEZONE)
     cutoff = (datetime.now(tz) - timedelta(days=2)).strftime('%Y-%m-%d')
     cleaned = {k: v for k, v in data.items() if k >= cutoff}
-    if cleaned != data:
-        save_json(SENT_ALERTS_FILE, cleaned)
+    if cleaned != data: save_json(SENT_ALERTS_FILE, cleaned)
 
-# ========= LOG ÖSSZEFOGLALÓ ÉS ARCHIVÁLÁS =========
+# ========= LOG ÖSSZEFOGLALÓ =========
 
 def send_daily_log_summary():
-    """
-    Napi zárásnál (00:10) elküldi a bot.log-ot Telegramon,
-    majd archiválja (bot_YYYY-MM-DD.log) és üríti az aktuálist.
-    """
     tz = pytz.timezone(TIMEZONE)
     yest = (datetime.now(tz) - timedelta(days=1)).strftime('%Y-%m-%d')
-
-    if not os.path.exists(LOG_FILE):
-        log.info("[log_summary] Nincs log fájl – kihagyva.")
-        return
-
-    # Összeszedjünk néhány számot a logból
-    error_count   = 0
-    warning_count = 0
-    alert_count   = 0
-    drift_count   = 0
-
+    if not os.path.exists(LOG_FILE): return
+    error_count = warning_count = alert_count = drift_count = 0
     try:
         with open(LOG_FILE, 'r', encoding='utf-8') as f:
             lines = f.readlines()
@@ -176,167 +150,245 @@ def send_daily_log_summary():
             if '[ALERT]'  in line:    alert_count   += 1
             if '[DRIFT]'  in line:    drift_count   += 1
     except Exception as e:
-        log.error(f"[log_summary] Olvasási hiba: {e}")
-        return
-
-    # Távirát összefoglaló szöveg
-    summary = (
-        f"📝 <b>Bot.log — {yest}</b>\n"
-        f"🚨 Hibák: {error_count}\n"
-        f"⚠️ Figyelmeztetések: {warning_count}\n"
-        f"📲 Elküldött riasztások: {alert_count}\n"
-        f"📉 Odds drift jelzések: {drift_count}"
-    )
-
-    # Log fájl elküldése Telegramon, ha volt valami
-    if lines:
-        send_telegram(summary, LOG_FILE)
-    else:
-        send_telegram(summary)
-
-    # Archiválás: bot_YYYY-MM-DD.log
+        log.error(f"[log_summary] Olvasási hiba: {e}"); return
+    summary = (f"📝 <b>Bot.log — {yest}</b>\n🚨 Hibák: {error_count}\n"
+               f"⚠️ Figyelmeztetések: {warning_count}\n📲 Riasztások: {alert_count}\n"
+               f"📉 Drift jelzések: {drift_count}")
+    send_telegram(summary, LOG_FILE) if lines else send_telegram(summary)
     archive_name = f"bot_{yest}.log"
-    try:
-        os.rename(LOG_FILE, archive_name)
-        log.info(f"[log_summary] Log archiválva: {archive_name}")
-    except Exception as e:
-        log.error(f"[log_summary] Archiválási hiba: {e}")
-        archive_name = None
-
-    # 7 napnál régebbi archivumok törlése
+    try: os.rename(LOG_FILE, archive_name)
+    except Exception as e: log.error(f"[log_summary] Archiválás hiba: {e}")
     cutoff_dt = datetime.now() - timedelta(days=7)
     for f in os.listdir('.'):
         if f.startswith("bot_") and f.endswith(".log"):
             try:
-                date_str = f[4:14]  # bot_YYYY-MM-DD.log
-                if datetime.strptime(date_str, '%Y-%m-%d') < cutoff_dt:
+                if datetime.strptime(f[4:14], '%Y-%m-%d') < cutoff_dt:
                     os.remove(f)
-                    log.info(f"[log_summary] Régi log törölve: {f}")
             except: pass
 
-    # Új (fresh) log indítása – setup_logger append módot használ,
-    # a rename után automatikusan üres fájlba ír
+# ========= VISSZAMÉRÉS DASHBOARD =========
+#
+# backtest.json struktúrája:
+# {
+#   "entries": [
+#     { "date": "2026-03-31", "id": 123, "minute": 38, "ev": 0.042,
+#       "live_odds": 1.38, "value_bet": true, "won": true },
+#     ...
+#   ]
+# }
+#
+# value_bet = True ha live_odds >= fair_odds (1/model_p)
+# won       = True ha végső gól > 1.5
+
+def update_backtest(live_history_entries, date_str):
+    """
+    A get_final_report() hívja meg: lekérdezi a végső eredményt
+    minden live tipp-re, és bejegyzi a backtest.json-ba.
+    Visszatér a napi összefoglaló dict-tel.
+    """
+    bt = load_json(BACKTEST_FILE, {"entries": []})
+    new_entries = []
+
+    for lt in live_history_entries:
+        fid     = lt.get("id")
+        ev      = lt.get("ev") or 0
+        model_p = lt.get("model_p")
+        lo      = lt.get("live_odds")
+        minute  = lt.get("minute", 0)
+
+        # Végső eredmény lekérdezése
+        won = False
+        try:
+            r = requests.get(f"{BASE_URL}/fixtures?id={fid}", headers=HEADERS, timeout=10)\
+                         .json().get("response", [])
+            if r:
+                gh = r[0]["goals"]["home"] or 0
+                ga = r[0]["goals"]["away"] or 0
+                won = (gh + ga) > 1.5
+        except Exception as e:
+            log.warning(f"[backtest] Eredmény lekérdezés hiba ({fid}): {e}")
+            continue
+
+        # VALUE bet meghatározás
+        fair_odds = round(1.0 / model_p, 4) if model_p and model_p > 0 else None
+        value_bet = (lo is not None and fair_odds is not None and lo >= fair_odds)
+
+        entry = {
+            "date":      date_str,
+            "id":        fid,
+            "minute":    minute,
+            "ev":        round(ev, 4),
+            "live_odds": lo,
+            "fair_odds": fair_odds,
+            "value_bet": value_bet,
+            "won":       won,
+        }
+        new_entries.append(entry)
+        log.info(f"[backtest] {fid} | ev={ev*100:.1f}% | value={value_bet} | won={won}")
+
+    bt["entries"].extend(new_entries)
+    save_json(BACKTEST_FILE, bt)
+    return new_entries
+
+def build_dashboard_message(new_entries):
+    """
+    Kumulatív dashboard üzenet építése a teljes backtest.json alapján.
+    """
+    bt = load_json(BACKTEST_FILE, {"entries": []})
+    all_e = bt["entries"]
+
+    if not all_e:
+        return "📊 <b>Dashboard</b>\nNincs elég adat még."
+
+    total   = len(all_e)
+    wins    = sum(1 for e in all_e if e.get("won"))
+    hit_all = wins / total * 100 if total else 0
+
+    # VALUE vs nem-VALUE
+    value_e    = [e for e in all_e if e.get("value_bet")]
+    no_value_e = [e for e in all_e if not e.get("value_bet")]
+    v_wins  = sum(1 for e in value_e    if e.get("won"))
+    nv_wins = sum(1 for e in no_value_e if e.get("won"))
+    v_hit   = v_wins  / len(value_e)    * 100 if value_e    else 0
+    nv_hit  = nv_wins / len(no_value_e) * 100 if no_value_e else 0
+
+    # Időablak bontás (33-43 vs 50-65)
+    w1_e = [e for e in all_e if 33 <= (e.get("minute") or 0) <= 43]
+    w2_e = [e for e in all_e if 50 <= (e.get("minute") or 0) <= 65]
+    w1_hit = sum(1 for e in w1_e if e.get("won")) / len(w1_e) * 100 if w1_e else 0
+    w2_hit = sum(1 for e in w2_e if e.get("won")) / len(w2_e) * 100 if w2_e else 0
+
+    # EV kalibráció: EV sávok szerinti bontás
+    def ev_bucket(e):
+        ev = e.get("ev", 0)
+        if ev < 0.03:  return "2-3%"
+        if ev < 0.05:  return "3-5%"
+        if ev < 0.10:  return "5-10%"
+        return ">10%"
+
+    buckets = {}
+    for e in all_e:
+        b = ev_bucket(e)
+        buckets.setdefault(b, {"total": 0, "won": 0})
+        buckets[b]["total"] += 1
+        if e.get("won"): buckets[b]["won"] += 1
+
+    ev_lines = ""
+    for bname in ["2-3%", "3-5%", "5-10%", ">10%"]:
+        bd = buckets.get(bname)
+        if bd and bd["total"] > 0:
+            pct = bd["won"] / bd["total"] * 100
+            ev_lines += f"  EV {bname}: {bd['won']}/{bd['total']} ({pct:.0f}%)\n"
+
+    # Mai nap rövid összefoglaló
+    today_won  = sum(1 for e in new_entries if e.get("won"))
+    today_tot  = len(new_entries)
+    today_line = f"Ma: {today_won}/{today_tot}" if today_tot else "Ma: nincs tipp"
+
+    msg = (
+        f"📊 <b>VISSZAMÉRÉS DASHBOARD</b>\n"
+        f"━" * 22 + "\n"
+        f"🎯 Összes: {wins}/{total} ({hit_all:.1f}%)\n"
+        f"📅 {today_line}\n"
+        f"\n"
+        f"✅ VALUE tipek:    {v_wins}/{len(value_e)} ({v_hit:.1f}%)\n"
+        f"⚠️ Nem-VALUE:       {nv_wins}/{len(no_value_e)} ({nv_hit:.1f}%)\n"
+        f"\n"
+        f"⏱ Ablak 33-43':   {sum(1 for e in w1_e if e.get('won'))}/{len(w1_e)} ({w1_hit:.1f}%)\n"
+        f"⏱ Ablak 50-65':   {sum(1 for e in w2_e if e.get('won'))}/{len(w2_e)} ({w2_hit:.1f}%)\n"
+        f"\n"
+        f"🔬 EV kalibráció:\n{ev_lines}"
+    )
+    return msg.strip()
 
 # ========= TAKARÍTÁS =========
 
 def cleanup_old_files():
     files_to_delete = []
-    now = datetime.now()
-    cutoff = now - timedelta(days=7)
+    cutoff = datetime.now() - timedelta(days=7)
     for f in os.listdir('.'):
         if (f.startswith("expert_lista_") or f.startswith("report_")) and f.endswith(".xlsx"):
             try:
-                date_str = f.split('_')[-1].split('.xlsx')[0]
-                file_date = datetime.strptime(date_str, '%Y-%m-%d')
-                if file_date < cutoff:
-                    os.remove(f)
-                    files_to_delete.append(f)
+                if datetime.strptime(f.split('_')[-1].split('.xlsx')[0], '%Y-%m-%d') < cutoff:
+                    os.remove(f); files_to_delete.append(f)
                     log.info(f"[cleanup] Törölve: {f}")
             except: pass
         if f.startswith(MASTER_TIPS_PREFIX) and f.endswith(".json"):
             try:
-                date_str = f[len(MASTER_TIPS_PREFIX):].split('.json')[0]
-                file_date = datetime.strptime(date_str, '%Y-%m-%d')
-                if file_date < cutoff:
-                    os.remove(f)
-                    files_to_delete.append(f)
+                if datetime.strptime(f[len(MASTER_TIPS_PREFIX):].split('.json')[0], '%Y-%m-%d') < cutoff:
+                    os.remove(f); files_to_delete.append(f)
                     log.info(f"[cleanup] Törölve: {f}")
             except: pass
     return files_to_delete
 
-# ========= MASTER BUILDER CACHE BETÖLTÉSE =========
+# ========= MASTER BUILDER CACHE =========
 
 def load_master_tips_for_today(date_str):
     fname = f"{MASTER_TIPS_PREFIX}{date_str}.json"
     data = load_json(fname, None)
-    if data is None:
-        return {}
-    tips_by_id = {}
-    for tip in data.get("tips", []):
-        fid = tip.get("fixture_id")
-        if fid is not None:
-            tips_by_id[int(fid)] = tip
-    return tips_by_id
+    if data is None: return {}
+    return {int(t["fixture_id"]): t for t in data.get("tips", []) if t.get("fixture_id") is not None}
 
 def get_ev_for_fixture(master_tips, fixture_id):
     tip = master_tips.get(int(fixture_id))
-    if tip is None:
-        return None, None
-    return tip.get("ev"), tip.get("model_p")
+    return (tip.get("ev"), tip.get("model_p")) if tip else (None, None)
 
 def get_prematch_odds_for_fixture(master_tips, fixture_id):
     tip = master_tips.get(int(fixture_id))
-    if tip is None:
-        return None
-    odds = tip.get("odds") or {}
-    return odds.get("over15")
+    return (tip.get("odds") or {}).get("over15") if tip else None
 
-# ========= LIVE ODDS LEKÉRÉSE =========
+# ========= LIVE ODDS =========
 
 def fetch_live_odds(fixture_id):
     try:
         r = requests.get(f"{BASE_URL}/odds/live", headers=HEADERS,
                          params={"fixture": fixture_id}, timeout=10)
-        if r.status_code != 200:
-            return None
-        resp = r.json().get("response", [])
-        for item in resp:
-            for bookmaker in item.get("odds", []):
-                for bet in bookmaker.get("bets", []):
-                    bet_name = (bet.get("name") or "").lower()
-                    if "total" not in bet_name and "goals" not in bet_name:
-                        continue
+        if r.status_code != 200: return None
+        for item in r.json().get("response", []):
+            for bm in item.get("odds", []):
+                for bet in bm.get("bets", []):
+                    if "total" not in (bet.get("name") or "").lower() and \
+                       "goals" not in (bet.get("name") or "").lower(): continue
                     for val in bet.get("values", []):
-                        label = str(val.get("value") or "").lower()
-                        if label in ("over 1.5", "o 1.5", "over1.5"):
-                            try:
-                                return float(val["odd"])
-                            except (ValueError, TypeError):
-                                pass
+                        if str(val.get("value") or "").lower() in ("over 1.5", "o 1.5", "over1.5"):
+                            try: return float(val["odd"])
+                            except: pass
     except Exception as e:
-        log.warning(f"[fetch_live_odds] Hiba ({fixture_id}): {e}")
+        log.warning(f"[fetch_live_odds] ({fixture_id}): {e}")
     return None
 
 def build_odds_line(live_odds, prematch_odds, model_p, drift_info=None):
     fair_odds = round(1.0 / model_p, 2) if model_p and model_p > 0 else None
     lines = []
     if live_odds is not None:
-        value_ok  = fair_odds is not None and live_odds >= fair_odds
-        value_str = "✅ VALUE" if value_ok else "⚠️ alacsony"
-        fair_str  = f" | fair: {fair_odds}" if fair_odds else ""
-        lines.append(f"💰 Live odds: <b>{live_odds}</b>{fair_str} → {value_str}")
+        value_ok = fair_odds is not None and live_odds >= fair_odds
+        fair_str = f" | fair: {fair_odds}" if fair_odds else ""
+        lines.append(f"💰 Live odds: <b>{live_odds}</b>{fair_str} → {'✅ VALUE' if value_ok else '⚠️ alacsony'}")
     elif prematch_odds is not None:
         fair_str = f" | fair: {fair_odds}" if fair_odds else ""
         lines.append(f"💰 Pre-match odds: {prematch_odds}{fair_str} (live nem elérhető)")
     if drift_info:
-        pct = drift_info["pct"]
-        prev = drift_info["prev"]
         if drift_info["direction"] == "drop":
-            lines.append(f"📉 <b>Odds esett:</b> {prev} → {live_odds} (-{pct:.1f}%) — smart money jel!")
+            lines.append(f"📉 <b>Odds esett:</b> {drift_info['prev']} → {live_odds} (-{drift_info['pct']:.1f}%) — smart money!")
         else:
-            lines.append(f"📈 Odds emelkedett: {prev} → {live_odds} (+{pct:.1f}%) — gyengülő piac")
+            lines.append(f"📈 Odds nőtt: {drift_info['prev']} → {live_odds} (+{drift_info['pct']:.1f}%) — gyengülő piac")
     return "\n".join(lines)
 
-# ========= ODDS DRIFT KÖVETÉS =========
+# ========= ODDS DRIFT =========
 
 def check_odds_drift(fixture_id, current_odds, now_str):
-    if current_odds is None:
-        return None
-    drift_cache = load_json(ODDS_DRIFT_FILE, {})
+    if current_odds is None: return None
+    dc = load_json(ODDS_DRIFT_FILE, {})
     key = str(fixture_id)
-    prev_entry = drift_cache.get(key)
-    drift_cache[key] = {"last_odds": current_odds, "ts": now_str}
-    save_json(ODDS_DRIFT_FILE, drift_cache)
-    if prev_entry is None:
-        return None
-    prev_odds = prev_entry.get("last_odds")
-    if prev_odds is None or prev_odds <= 0:
-        return None
-    change_pct = (prev_odds - current_odds) / prev_odds
-    if change_pct >= DRIFT_DROP_THRESHOLD:
-        return {"prev": prev_odds, "pct": change_pct * 100, "direction": "drop"}
-    elif change_pct <= -DRIFT_RISE_THRESHOLD:
-        return {"prev": prev_odds, "pct": abs(change_pct) * 100, "direction": "rise"}
+    prev = dc.get(key)
+    dc[key] = {"last_odds": current_odds, "ts": now_str}
+    save_json(ODDS_DRIFT_FILE, dc)
+    if not prev: return None
+    po = prev.get("last_odds")
+    if not po or po <= 0: return None
+    chg = (po - current_odds) / po
+    if chg >= DRIFT_DROP_THRESHOLD:  return {"prev": po, "pct": chg * 100, "direction": "drop"}
+    if chg <= -DRIFT_RISE_THRESHOLD: return {"prev": po, "pct": abs(chg) * 100, "direction": "rise"}
     return None
 
 # ========= STATISZTIKAI MOTOR =========
@@ -345,65 +397,55 @@ def get_team_detailed_data(team_id):
     cache = load_json(TEAM_STATS_CACHE_FILE, {})
     if str(team_id) in cache: return cache[str(team_id)]
     try:
-        r = requests.get(f"{BASE_URL}/fixtures?team={team_id}&last=10", headers=HEADERS, timeout=12)
-        matches = r.json().get("response", [])
+        matches = requests.get(f"{BASE_URL}/fixtures?team={team_id}&last=10",
+                                headers=HEADERS, timeout=12).json().get("response", [])
         if not matches: return None
-        s, c, corn_list, btts_count = 0, 0, [], 0
+        s = c = btts_count = 0
+        corn_list = []
         for i, m in enumerate(matches):
             is_h = m['teams']['home']['id'] == team_id
-            scored = m['goals']['home'] if is_h else m['goals']['away']
-            conceded = m['goals']['away'] if is_h else m['goals']['home']
-            s += (scored or 0); c += (conceded or 0)
-            if i < 5 and (scored or 0) > 0 and (conceded or 0) > 0: btts_count += 1
+            scored   = (m['goals']['home'] if is_h else m['goals']['away']) or 0
+            conceded = (m['goals']['away'] if is_h else m['goals']['home']) or 0
+            s += scored; c += conceded
+            if i < 5 and scored > 0 and conceded > 0: btts_count += 1
             if i < 5:
-                fid = m['fixture']['id']
-                sr = requests.get(f"{BASE_URL}/fixtures/statistics?fixture={fid}&team={team_id}", headers=HEADERS, timeout=10)
-                stats = sr.json().get("response", [])
-                if stats:
-                    for stat in stats[0].get('statistics', []):
+                st = requests.get(f"{BASE_URL}/fixtures/statistics?fixture={m['fixture']['id']}&team={team_id}",
+                                   headers=HEADERS, timeout=10).json().get("response", [])
+                if st:
+                    for stat in st[0].get('statistics', []):
                         if stat['type'] == 'Corner Kicks': corn_list.append(stat['value'] or 0)
-        res = {
-            "avg_scored": s/10, "avg_conceded": c/10, "btts_trend": btts_count,
-            "corner_avg": sum(corn_list)/len(corn_list) if len(corn_list) >= 3 else None
-        }
+        res = {"avg_scored": s/10, "avg_conceded": c/10, "btts_trend": btts_count,
+               "corner_avg": sum(corn_list)/len(corn_list) if len(corn_list) >= 3 else None}
         cache[str(team_id)] = res
         save_json(TEAM_STATS_CACHE_FILE, cache)
         return res
     except Exception as e:
-        log.warning(f"[team_data] Hiba ({team_id}): {e}")
-        return None
-
-# ========= LÖVÉS STATISZTIKA =========
+        log.warning(f"[team_data] ({team_id}): {e}"); return None
 
 def get_live_shot_stats(fixture_id):
     try:
-        sr = requests.get(f"{BASE_URL}/fixtures/statistics?fixture={fixture_id}", headers=HEADERS, timeout=10)
-        stats_resp = sr.json().get("response", [])
-        shots_on_goal = shots_off_goal = dangerous_att = corners = 0
-        for team_stats in stats_resp:
-            for stat in team_stats.get("statistics", []):
-                t = stat.get("type", "")
-                v = stat.get("value") or 0
-                if t == "Shots on Goal":       shots_on_goal  += int(v)
-                elif t == "Shots off Goal":    shots_off_goal += int(v)
-                elif t == "Dangerous Attacks": dangerous_att  += int(v)
-                elif t == "Corner Kicks":      corners        += int(v)
-        return {"shots_on_goal": shots_on_goal, "shots_total": shots_on_goal + shots_off_goal,
-                "dangerous_att": dangerous_att, "corner_total": corners}
+        sr = requests.get(f"{BASE_URL}/fixtures/statistics?fixture={fixture_id}",
+                          headers=HEADERS, timeout=10).json().get("response", [])
+        sog = soff = da = corn = 0
+        for ts in sr:
+            for stat in ts.get("statistics", []):
+                t = stat.get("type", ""); v = int(stat.get("value") or 0)
+                if t == "Shots on Goal":       sog  += v
+                elif t == "Shots off Goal":    soff += v
+                elif t == "Dangerous Attacks": da   += v
+                elif t == "Corner Kicks":      corn += v
+        return {"shots_on_goal": sog, "shots_total": sog+soff, "dangerous_att": da, "corner_total": corn}
     except Exception as e:
-        log.warning(f"[shot_stats] Hiba ({fixture_id}): {e}")
+        log.warning(f"[shot_stats] ({fixture_id}): {e}")
         return {"shots_on_goal": 0, "shots_total": 0, "dangerous_att": 0, "corner_total": 0}
 
-def is_active_game(shot_stats):
-    sog = shot_stats.get("shots_on_goal", 0)
-    st  = shot_stats.get("shots_total",  0)
-    da  = shot_stats.get("dangerous_att", 0)
-    return (sog >= SHOTS_ON_GOAL_MIN) or (st >= SHOTS_TOTAL_MIN) or ((da >= DANGEROUS_ATT_MIN) and (sog >= 1))
+def is_active_game(s):
+    return (s["shots_on_goal"] >= SHOTS_ON_GOAL_MIN or
+            s["shots_total"]   >= SHOTS_TOTAL_MIN or
+            (s["dangerous_att"] >= DANGEROUS_ATT_MIN and s["shots_on_goal"] >= 1))
 
-def in_live_window(elapsed):
-    return any(start <= elapsed <= end for start, end in LIVE_WINDOWS)
-
-# ========= LIVE FIXTURES RETRY =========
+def in_live_window(e):
+    return any(s <= e <= en for s, en in LIVE_WINDOWS)
 
 def fetch_live_fixtures(max_retries=3, backoff=5):
     for attempt in range(max_retries):
@@ -411,16 +453,14 @@ def fetch_live_fixtures(max_retries=3, backoff=5):
             r = requests.get(f"{BASE_URL}/fixtures?live=all", headers=HEADERS, timeout=10)
             if r.status_code == 429:
                 wait = backoff * (2 ** attempt)
-                log.warning(f"[fetch_live] 429 rate limit – várakozás {wait}s")
-                time.sleep(wait); continue
+                log.warning(f"[fetch_live] 429 – vár {wait}s"); time.sleep(wait); continue
             r.raise_for_status()
             return r.json().get("response", [])
         except requests.exceptions.Timeout:
-            log.warning(f"[fetch_live] Timeout (kísérlet {attempt+1}/{max_retries})")
+            log.warning(f"[fetch_live] Timeout ({attempt+1}/{max_retries})")
         except requests.exceptions.RequestException as e:
-            log.warning(f"[fetch_live] Hiba: {e} (kísérlet {attempt+1}/{max_retries})")
-        if attempt < max_retries - 1:
-            time.sleep(backoff * (attempt + 1))
+            log.warning(f"[fetch_live] Hiba: {e}")
+        if attempt < max_retries - 1: time.sleep(backoff * (attempt + 1))
     log.error("[fetch_live] Minden próbálkozás sikertelen.")
     return []
 
@@ -429,118 +469,119 @@ def fetch_live_fixtures(max_retries=3, backoff=5):
 def scan_next_day():
     tz = pytz.timezone(TIMEZONE)
     target = (datetime.now(tz) + timedelta(days=1)).strftime('%Y-%m-%d')
-    log.info(f"[scan] Deep Scan indul: {target}")
-    send_telegram(f"🔬 <b>EXPERT v5.5 Deep Scan: {target}</b>")
+    log.info(f"[scan] Deep Scan: {target}")
+    send_telegram(f"🔬 <b>EXPERT v5.6 Deep Scan: {target}</b>")
     try:
-        r = requests.get(f"{BASE_URL}/fixtures?date={target}", headers=HEADERS, timeout=30)
-        matches = r.json().get("response", [])
-        log.info(f"[scan] {len(matches)} meccset talált {target}-re")
+        matches = requests.get(f"{BASE_URL}/fixtures?date={target}",
+                                headers=HEADERS, timeout=30).json().get("response", [])
+        log.info(f"[scan] {len(matches)} meccs")
         valid = []
         for m in matches:
-            h_data = get_team_detailed_data(m['teams']['home']['id'])
-            a_data = get_team_detailed_data(m['teams']['away']['id'])
-            if not h_data or not a_data: continue
-            total_avg = (h_data['avg_scored'] + h_data['avg_conceded'] + a_data['avg_scored'] + a_data['avg_conceded']) / 2
-            over_prob = (1 - (math.exp(-total_avg) * (1 + total_avg + (total_avg**2)/2))) * 100
+            hd = get_team_detailed_data(m['teams']['home']['id'])
+            ad = get_team_detailed_data(m['teams']['away']['id'])
+            if not hd or not ad: continue
+            ta = (hd['avg_scored'] + hd['avg_conceded'] + ad['avg_scored'] + ad['avg_conceded']) / 2
+            op = (1 - (math.exp(-ta) * (1 + ta + (ta**2)/2))) * 100
             tips = []
-            if over_prob > 82: tips.append("Over 2.5")
-            elif over_prob > 68: tips.append("Over 1.5")
-            if h_data['avg_scored'] > 1.1 and a_data['avg_scored'] > 1.1 and h_data['btts_trend'] >= 2 and a_data['btts_trend'] >= 2:
-                tips.append("Over 2.5 & BTTS" if over_prob > 80 else "BTTS")
-            corner_info = "N/A"
-            if h_data['corner_avg'] is not None and a_data['corner_avg'] is not None:
-                exp_corners = h_data['corner_avg'] + a_data['corner_avg']
-                corner_info = round(exp_corners, 1)
-                if exp_corners >= 10.5: tips.append("Corners Over 8.5")
-                elif exp_corners >= 9.2: tips.append("Corners Over 7.5")
+            if op > 82: tips.append("Over 2.5")
+            elif op > 68: tips.append("Over 1.5")
+            if hd['avg_scored'] > 1.1 and ad['avg_scored'] > 1.1 and hd['btts_trend'] >= 2 and ad['btts_trend'] >= 2:
+                tips.append("Over 2.5 & BTTS" if op > 80 else "BTTS")
+            ci = "N/A"
+            if hd['corner_avg'] and ad['corner_avg']:
+                ec = hd['corner_avg'] + ad['corner_avg']; ci = round(ec, 1)
+                if ec >= 10.5: tips.append("Corners Over 8.5")
+                elif ec >= 9.2: tips.append("Corners Over 7.5")
             if tips:
                 valid.append({"ID": m['fixture']['id'],
-                               "IDŐPONT": (datetime.fromisoformat(m['fixture']['date'][:19]).replace(tzinfo=pytz.utc)).astimezone(tz).strftime('%H:%M'),
+                               "IDŐPONT": datetime.fromisoformat(m['fixture']['date'][:19])
+                                           .replace(tzinfo=pytz.utc).astimezone(tz).strftime('%H:%M'),
                                "BAJNOKSÁG": m['league']['name'].upper(),
                                "MECCS": f"{m['teams']['home']['name']} - {m['teams']['away']['name']}",
-                               "OVER 2.5 ESÉLY": f"{round(over_prob, 1)}%",
-                               "VÁRHATÓ SZÖGLET": corner_info,
+                               "OVER 2.5 ESÉLY": f"{round(op, 1)}%",
+                               "VÁRHATÓ SZÖGLET": ci,
                                "TIPP JAVASLAT": " | ".join(tips)})
-        log.info(f"[scan] {len(valid)} tipp jelolt: {target}")
+        log.info(f"[scan] {len(valid)} tipp: {target}")
         if valid:
-            cache = load_json(CACHE_FILE, {})
-            cache[target] = valid; save_json(CACHE_FILE, cache)
-            f_name = f"expert_lista_{target}.xlsx"
-            pd.DataFrame(valid).to_excel(f_name, index=False)
-            send_telegram(f"✅ Deep Scan kész! ({len(valid)} tipp)", f_name)
-            sync_to_github([CACHE_FILE, f_name, TEAM_STATS_CACHE_FILE], f"v5.5 Update: {target}")
+            cache = load_json(CACHE_FILE, {}); cache[target] = valid; save_json(CACHE_FILE, cache)
+            fn = f"expert_lista_{target}.xlsx"; pd.DataFrame(valid).to_excel(fn, index=False)
+            send_telegram(f"✅ Deep Scan kész! ({len(valid)} tipp)", fn)
+            sync_to_github([CACHE_FILE, fn, TEAM_STATS_CACHE_FILE], f"v5.6 Update: {target}")
     except Exception as e:
-        log.error(f"[scan] Hiba: {e}")
-        send_telegram(f"⚠️ Scan hiba: {e}")
+        log.error(f"[scan] Hiba: {e}"); send_telegram(f"⚠️ Scan hiba: {e}")
 
 # ========= JELENTÉS ÉS TAKARÍTÁS =========
 
 def get_final_report():
     tz = pytz.timezone(TIMEZONE)
     today_str = datetime.now(tz).strftime('%Y-%m-%d')
-    yest = (datetime.now(tz) - timedelta(days=1)).strftime('%Y-%m-%d')
-    log.info(f"[report] Napi zárás indul: {yest}")
-    cache = load_json(CACHE_FILE, {})
+    yest      = (datetime.now(tz) - timedelta(days=1)).strftime('%Y-%m-%d')
+    log.info(f"[report] Napi zárás: {yest}")
+    cache   = load_json(CACHE_FILE, {})
     matches = cache.get(yest, [])
     if not matches:
-        log.info("[report] Nincs adat a tegnapi napra.")
-        # Log mégis elküldünk
-        send_daily_log_summary()
-        return
+        log.info("[report] Nincs adat tegnap.")
+        send_daily_log_summary(); return
+
     send_telegram(f"📊 <b>Összetett jelentés ({yest})</b>")
     final = []
     for m in matches:
         try:
-            r = requests.get(f"{BASE_URL}/fixtures?id={m['ID']}", headers=HEADERS).json().get("response", [])
+            r = requests.get(f"{BASE_URL}/fixtures?id={m['ID']}", headers=HEADERS)\
+                         .json().get("response", [])
             if r:
-                res = r[0]; h, a = res['goals']['home'], res['goals']['away']
-                total_goals = (h or 0) + (a or 0)
+                res = r[0]; h = res['goals']['home'] or 0; a = res['goals']['away'] or 0
+                total_goals = h + a
                 c_total = 0
                 if 'statistics' in res:
-                    for s_set in res['statistics']:
-                        for it in s_set['statistics']:
+                    for ss in res['statistics']:
+                        for it in ss['statistics']:
                             if it['type'] == 'Corner Kicks': c_total += (it['value'] or 0)
                 m["EREDMÉNY"] = f"{h}-{a}"
                 tipp = m.get("TIPP JAVASLAT", "")
-                if "Over 2.5" in tipp:
-                    m["GÓL SIKER"] = "✅" if total_goals > 2.5 else "❌"
-                elif "Over 1.5" in tipp:
-                    m["GÓL SIKER"] = "✅" if total_goals > 1.5 else "❌"
-                else:
-                    m["GÓL SIKER"] = "✅" if total_goals > 1.5 else "❌"
-                m["BTTS SIKER"] = "✅" if (h or 0) > 0 and (a or 0) > 0 else "❌"
+                if "Over 2.5" in tipp: m["GÓL SIKER"] = "✅" if total_goals > 2.5 else "❌"
+                else:                  m["GÓL SIKER"] = "✅" if total_goals > 1.5 else "❌"
+                m["BTTS SIKER"]  = "✅" if h > 0 and a > 0 else "❌"
                 m["SZÖGLET ÖSSZ"] = c_total
-                log.info(f"[report] {m['MECCS']}: {h}-{a} | Gól: {m['GÓL SIKER']}")
+                log.info(f"[report] {m['MECCS']}: {h}-{a} | {m['GÓL SIKER']}")
             final.append(m); time.sleep(1)
         except Exception as e:
-            log.error(f"[report] Meccs feldolgozási hiba: {e}")
-            continue
+            log.error(f"[report] Meccs hiba: {e}"); continue
+
+    # Live history kigyűjtése + backtest frissítés
     live_history = load_json(LIVE_HISTORY_FILE, [])
     live_wins = 0
     if live_history:
         for lt in live_history:
             try:
-                r = requests.get(f"{BASE_URL}/fixtures?id={lt['id']}", headers=HEADERS).json().get("response", [])
-                if r:
-                    res = r[0]
-                    if (res['goals']['home'] or 0) + (res['goals']['away'] or 0) > 1.5:
-                        live_wins += 1
+                r = requests.get(f"{BASE_URL}/fixtures?id={lt['id']}", headers=HEADERS)\
+                             .json().get("response", [])
+                if r and (r[0]['goals']['home'] or 0) + (r[0]['goals']['away'] or 0) > 1.5:
+                    live_wins += 1
             except: continue
         live_msg = f"📱 <b>LIVE ÖSSZESÍTŐ:</b>\n🎯 Küldött: {len(live_history)}\n✅ Nyert (O1.5): {live_wins}"
-        log.info(f"[report] Live: {len(live_history)} tipp, {live_wins} nyertes")
+        log.info(f"[report] Live: {len(live_history)} tipp, {live_wins} nyert")
     else:
         live_msg = "📱 <b>LIVE ÖSSZESÍTŐ:</b>\nMa nem volt élő tipp."
-        log.info("[report] Ma nem volt élő tipp.")
-    f_name = f"report_{yest}.xlsx"
-    pd.DataFrame(final).to_excel(f_name, index=False)
-    send_telegram(live_msg, f_name)
+        log.info("[report] Nincs live tipp.")
+
+    fn = f"report_{yest}.xlsx"
+    pd.DataFrame(final).to_excel(fn, index=False)
+    send_telegram(live_msg, fn)
+
+    # VISSZAMÉRÉS DASHBOARD
+    if live_history:
+        new_entries = update_backtest(live_history, yest)
+        dashboard_msg = build_dashboard_message(new_entries)
+        send_telegram(dashboard_msg)
+        log.info(f"[backtest] Dashboard elküldve ({len(new_entries)} új bejegyzés)")
+
     deleted_files = cleanup_old_files()
     save_json(LIVE_HISTORY_FILE, [])
     save_json(ODDS_DRIFT_FILE, {})
     cleanup_sent_alerts(today_str)
-    # Log összefoglaló elküldése és archiválása
     send_daily_log_summary()
-    sync_to_github([f_name, LIVE_HISTORY_FILE, SENT_ALERTS_FILE, ODDS_DRIFT_FILE],
+    sync_to_github([fn, LIVE_HISTORY_FILE, SENT_ALERTS_FILE, ODDS_DRIFT_FILE, BACKTEST_FILE],
                    f"Final Report: {yest}", delete_files=deleted_files)
 
 # ========= FŐ CIKLUS =========
@@ -548,20 +589,18 @@ def get_final_report():
 def main_loop():
     tz = pytz.timezone(TIMEZONE)
     log.info("=" * 50)
-    log.info("Bot v5.5 elindult (Logfile).")
+    log.info("Bot v5.6 elindult (Dashboard).")
     log.info(f"LIVE_MIN_EV={LIVE_MIN_EV} | WINDOWS={LIVE_WINDOWS}")
     log.info("=" * 50)
     while True:
         now = datetime.now(tz)
-        if now.hour == 19 and now.minute == 0:
-            scan_next_day(); time.sleep(61)
-        if now.hour == 0 and now.minute == 10:
-            get_final_report(); time.sleep(61)
+        if now.hour == 19 and now.minute == 0: scan_next_day();    time.sleep(61)
+        if now.hour == 0  and now.minute == 10: get_final_report(); time.sleep(61)
 
         try:
-            today_str = now.strftime('%Y-%m-%d')
-            now_str   = now.strftime('%H:%M')
-            today_m   = load_json(CACHE_FILE, {}).get(today_str, [])
+            today_str   = now.strftime('%Y-%m-%d')
+            now_str     = now.strftime('%H:%M')
+            today_m     = load_json(CACHE_FILE, {}).get(today_str, [])
             sent_today  = load_sent_alerts(today_str)
             master_tips = load_master_tips_for_today(today_str)
 
@@ -571,74 +610,62 @@ def main_loop():
                 log.debug(f"[main_loop] {len(live_fixtures)} élő meccs | {now_str}")
 
                 for fx in live_fixtures:
-                    mid  = fx["fixture"]["id"]
-                    min_ = fx["fixture"]["status"]["elapsed"] or 0
-                    h, a = (fx["goals"]["home"] or 0), (fx["goals"]["away"] or 0)
-                    match_label = f"{fx['teams']['home']['name']} – {fx['teams']['away']['name']}"
+                    mid   = fx["fixture"]["id"]
+                    min_  = fx["fixture"]["status"]["elapsed"] or 0
+                    h, a  = (fx["goals"]["home"] or 0), (fx["goals"]["away"] or 0)
+                    label = f"{fx['teams']['home']['name']} – {fx['teams']['away']['name']}"
 
                     if mid not in t_ids: continue
                     if (h + a) > 1:     continue
 
-                    current_live_odds = fetch_live_odds(mid)
-                    drift_info = check_odds_drift(mid, current_live_odds, now_str)
+                    lo = fetch_live_odds(mid)
+                    di = check_odds_drift(mid, lo, now_str)
 
-                    # Drift riasztás már elküldött meccsre
-                    if str(mid) in sent_today and drift_info is not None:
-                        log.info(f"[DRIFT] {match_label} | {drift_info['direction']} {drift_info['pct']:.1f}%")
-                        if drift_info["direction"] == "drop":
-                            drift_msg = (f"📉 <b>ODDS DRIFT — {match_label}</b>\n"
-                                         f"{drift_info['prev']} → {current_live_odds} (-{drift_info['pct']:.1f}%)\n"
-                                         f"🟢 Smart money mozgás — erősödő piac!")
+                    if str(mid) in sent_today and di is not None:
+                        log.info(f"[DRIFT] {label} | {di['direction']} {di['pct']:.1f}%")
+                        if di["direction"] == "drop":
+                            send_telegram(f"📉 <b>ODDS DRIFT — {label}</b>\n"
+                                          f"{di['prev']} → {lo} (-{di['pct']:.1f}%)\n"
+                                          f"🟢 Smart money — erősödő piac!")
                         else:
-                            drift_msg = (f"📈 <b>ODDS DRIFT — {match_label}</b>\n"
-                                         f"{drift_info['prev']} → {current_live_odds} (+{drift_info['pct']:.1f}%)\n"
-                                         f"🟡 Gyengülő piac — óvatosság!")
-                        send_telegram(drift_msg)
+                            send_telegram(f"📈 <b>ODDS DRIFT — {label}</b>\n"
+                                          f"{di['prev']} → {lo} (+{di['pct']:.1f}%)\n"
+                                          f"🟡 Gyengülő piac — óvatosság!")
                         continue
 
-                    if str(mid) in sent_today:  continue
+                    if str(mid) in sent_today:   continue
                     if not in_live_window(min_):
-                        log.debug(f"[main_loop] {match_label} – {min_}. perc – ablakból kiesett")
-                        continue
+                        log.debug(f"[main_loop] {label} – {min_}' – ablakból kiesett"); continue
 
-                    shot_stats = get_live_shot_stats(mid)
-                    if not is_active_game(shot_stats):
-                        log.debug(f"[main_loop] {match_label} – low activity (sog={shot_stats['shots_on_goal']}), skip")
-                        continue
+                    ss = get_live_shot_stats(mid)
+                    if not is_active_game(ss):
+                        log.debug(f"[main_loop] {label} – low activity, skip"); continue
 
                     if not master_tips:
-                        log.warning(f"[main_loop] Nincs master tips fájl – {today_str}")
-                        continue
+                        log.warning(f"[main_loop] Nincs master tips – {today_str}"); continue
                     ev, model_p = get_ev_for_fixture(master_tips, mid)
                     if ev is None or ev < LIVE_MIN_EV:
-                        log.debug(f"[main_loop] {match_label} – EV={ev} < {LIVE_MIN_EV}, skip")
-                        continue
+                        log.debug(f"[main_loop] {label} – EV={ev}, skip"); continue
 
-                    prematch_odds = get_prematch_odds_for_fixture(master_tips, mid)
-                    odds_line     = build_odds_line(current_live_odds, prematch_odds, model_p, drift_info)
+                    po = get_prematch_odds_for_fixture(master_tips, mid)
+                    ol = build_odds_line(lo, po, model_p, di)
 
-                    msg = (
-                        f"⚽ <b>LIVE: Over 1.5 🔥</b>\n"
-                        f"{match_label}\n"
-                        f"📍 {h}–{a} ({min_}. perc)\n"
-                        f"🎯 Kapura tartó: {shot_stats.get('shots_on_goal',0)} | Összes lövés: {shot_stats.get('shots_total',0)}\n"
-                        f"⚡ Veszélyes tám.: {shot_stats.get('dangerous_att',0)}\n"
-                        f"📊 EV: {ev*100:.1f}% | P: {f'{model_p*100:.1f}%' if model_p else 'N/A'}"
-                    )
-                    if odds_line:
-                        msg += f"\n{odds_line}"
+                    msg = (f"⚽ <b>LIVE: Over 1.5 🔥</b>\n{label}\n"
+                           f"📍 {h}–{a} ({min_}. perc)\n"
+                           f"🎯 Kapura tartó: {ss['shots_on_goal']} | Összes lövés: {ss['shots_total']}\n"
+                           f"⚡ Veszélyes tám.: {ss['dangerous_att']}\n"
+                           f"📊 EV: {ev*100:.1f}% | P: {f'{model_p*100:.1f}%' if model_p else 'N/A'}")
+                    if ol: msg += f"\n{ol}"
 
                     send_telegram(msg)
-                    log.info(f"[ALERT] {match_label} | {min_}. perc | EV={ev*100:.1f}% | odds={current_live_odds}")
-
+                    log.info(f"[ALERT] {label} | {min_}' | EV={ev*100:.1f}% | odds={lo}")
                     save_sent_alert(today_str, mid)
 
                     hst = load_json(LIVE_HISTORY_FILE, [])
                     hst.append({"id": mid, "time": now_str, "ev": ev, "model_p": model_p,
-                                 "shots_on": shot_stats.get('shots_on_goal'),
-                                 "shots_tot": shot_stats.get('shots_total'),
+                                 "shots_on": ss["shots_on_goal"], "shots_tot": ss["shots_total"],
                                  "score_live": f"{h}-{a}", "minute": min_,
-                                 "live_odds": current_live_odds, "prematch_odds": prematch_odds})
+                                 "live_odds": lo, "prematch_odds": po})
                     save_json(LIVE_HISTORY_FILE, hst)
 
         except Exception as e:
