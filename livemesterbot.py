@@ -8,7 +8,7 @@ from threading import Thread
 # ========= RENDER ÉBREN TARTÓ =========
 app = Flask('')
 @app.route('/')
-def home(): return "LiveMesterBot EXPERT v5.0: EV-Cache + Shot-Filter"
+def home(): return "LiveMesterBot EXPERT v5.1: EV-Strict + Retry"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -28,28 +28,22 @@ HEADERS           = {"x-apisports-key": API_KEY}
 TIMEZONE          = "Europe/Budapest"
 
 CACHE_FILE            = "foci_master_cache.json"
-# foci_master_builder.py által feltöltött napi tipp JSON fájl formátuma: tips_YYYY-MM-DD.json
-# Ha a Supabase elérés nem elérhető, a lokálisan letöltött JSON fájlból olvas
-MASTER_TIPS_PREFIX    = "tips_"           # tips_YYYY-MM-DD.json
+MASTER_TIPS_PREFIX    = "tips_"
 LIVE_HISTORY_FILE     = "live_history.json"
 SENT_ALERTS_FILE      = "sent_alerts.json"
 TEAM_STATS_CACHE_FILE = "team_stats_cache.json"
 
 # ========= LIVE LÖVÉS-SZŰRÉS KÜSZÖBÖK =========
-# Kapura tartó lövések (Shots on Goal) + mezőnylövések (Shots off Goal)
-# A két értéket külön is figyeljük a pontosabb szűréshez
-SHOTS_ON_GOAL_MIN   = 3   # minimum kapura tartó lövések száma (mindkét csapat összesen)
-SHOTS_TOTAL_MIN     = 6   # minimum összes lövés (kapura + mellé) mindkét csapattól
-DANGEROUS_ATT_MIN   = 20  # veszélyes támadások minimuma (ha az API adja)
+SHOTS_ON_GOAL_MIN   = 3
+SHOTS_TOTAL_MIN     = 6
+DANGEROUS_ATT_MIN   = 20
 
-# Live riasztás időablakok (perc)
 LIVE_WINDOWS = [
-    (33, 43),   # 33-43. perc: közel a félidőhöz, gólok jellemzően koncentrálódnak
-    (50, 65),   # 50-65. perc: a meccs legintenzívebb szakasza gólszám szempontjából
+    (33, 43),
+    (50, 65),
 ]
 
-# EV küszöb: csak akkor küldünk live tippet, ha a master builder >= ennyi EV-t számolt
-LIVE_MIN_EV = 0.02   # 2% minimális várható érték
+LIVE_MIN_EV = 0.02
 
 # ========= SEGÉDFÜGGVÉNYEK =========
 
@@ -106,7 +100,6 @@ def cleanup_old_files():
                     os.remove(f)
                     files_to_delete.append(f)
             except: pass
-        # tips_YYYY-MM-DD.json fájlok is törlődnek 7 nap után
         if f.startswith(MASTER_TIPS_PREFIX) and f.endswith(".json"):
             try:
                 date_str = f[len(MASTER_TIPS_PREFIX):].split('.json')[0]
@@ -120,13 +113,6 @@ def cleanup_old_files():
 # ========= MASTER BUILDER CACHE BETÖLTÉSE =========
 
 def load_master_tips_for_today(date_str):
-    """
-    Betölti a foci_master_builder.py által generált napi tips JSON fájlt.
-    Ez tartalmazza a Dixon-Coles EV értékeket és a model_p valószínűségeket.
-
-    Visszatérési formátum: dict, fixture_id (int) -> tip rekord
-    Ha a fájl nem létezik, üres dict-et ad vissza.
-    """
     fname = f"{MASTER_TIPS_PREFIX}{date_str}.json"
     data = load_json(fname, None)
     if data is None:
@@ -139,10 +125,6 @@ def load_master_tips_for_today(date_str):
     return tips_by_id
 
 def get_ev_for_fixture(master_tips, fixture_id):
-    """
-    Visszaadja a master builder által számolt EV értéket egy adott fixture_id-re.
-    Ha nincs adat, None-t ad vissza.
-    """
     tip = master_tips.get(int(fixture_id))
     if tip is None:
         return None, None
@@ -183,14 +165,6 @@ def get_team_detailed_data(team_id):
 # ========= LÖVÉS STATISZTIKA LEKÉRÉSE =========
 
 def get_live_shot_stats(fixture_id):
-    """
-    Lekéri az élő meccs lövés statisztikáit.
-    Visszatér:
-        shots_on_goal  : kapura tartó lövések (mindkét csapat összesen)
-        shots_total    : összes lövés (kapura + mellé)
-        dangerous_att  : veszélyes támadások (ha elérhető)
-        corner_total   : szögletek (mindkét csapat összesen)
-    """
     try:
         sr = requests.get(
             f"{BASE_URL}/fixtures/statistics?fixture={fixture_id}",
@@ -205,10 +179,10 @@ def get_live_shot_stats(fixture_id):
             for stat in team_stats.get("statistics", []):
                 t = stat.get("type", "")
                 v = stat.get("value") or 0
-                if t == "Shots on Goal":     shots_on_goal  += int(v)
-                elif t == "Shots off Goal":  shots_off_goal += int(v)
-                elif t == "Dangerous Attacks": dangerous_att += int(v)
-                elif t == "Corner Kicks":    corners        += int(v)
+                if t == "Shots on Goal":       shots_on_goal  += int(v)
+                elif t == "Shots off Goal":    shots_off_goal += int(v)
+                elif t == "Dangerous Attacks": dangerous_att  += int(v)
+                elif t == "Corner Kicks":      corners        += int(v)
         return {
             "shots_on_goal":  shots_on_goal,
             "shots_total":    shots_on_goal + shots_off_goal,
@@ -219,35 +193,51 @@ def get_live_shot_stats(fixture_id):
         return {"shots_on_goal": 0, "shots_total": 0, "dangerous_att": 0, "corner_total": 0}
 
 def is_active_game(shot_stats):
-    """
-    Meghatározza, hogy a meccs elég aktív-e a live riasztáshoz.
-    Feltételek:
-        1. Minimum SHOTS_ON_GOAL_MIN kapura tartó lövés VAGY
-        2. Minimum SHOTS_TOTAL_MIN összes lövés
-        3. Opcionális: ha az API adja a veszélyes támadásokat, az is beleszámít
-    """
     sog = shot_stats.get("shots_on_goal", 0)
     st  = shot_stats.get("shots_total",  0)
     da  = shot_stats.get("dangerous_att", 0)
-
     shots_ok = (sog >= SHOTS_ON_GOAL_MIN) or (st >= SHOTS_TOTAL_MIN)
-    # Ha van veszélyes támadás adat és alacsony a lövésszám, az is elfogadható
     att_ok   = (da >= DANGEROUS_ATT_MIN) and (sog >= 1)
     return shots_ok or att_ok
 
 def in_live_window(elapsed):
-    """True, ha az eltelt perc valamelyik LIVE_WINDOWS ablakba esik."""
     for (start, end) in LIVE_WINDOWS:
         if start <= elapsed <= end:
             return True
     return False
+
+# ========= LIVE FIXTURES LEKÉRÉSE RETRY LOGIKÁVAL =========
+
+def fetch_live_fixtures(max_retries=3, backoff=5):
+    """
+    Lekéri az összes élő mérkőzést. Ha a kérés hibásodik, max_retries-szor próbálja
+    újra exponenciális backoff-fal. Visszatér a response listával vagy üres listával.
+    """
+    for attempt in range(max_retries):
+        try:
+            r = requests.get(f"{BASE_URL}/fixtures?live=all", headers=HEADERS, timeout=10)
+            if r.status_code == 429:
+                wait = backoff * (2 ** attempt)
+                print(f"[fetch_live] 429 rate limit – várakozás {wait}s")
+                time.sleep(wait)
+                continue
+            r.raise_for_status()
+            return r.json().get("response", [])
+        except requests.exceptions.Timeout:
+            print(f"[fetch_live] Timeout (kísérlet {attempt+1}/{max_retries})")
+        except requests.exceptions.RequestException as e:
+            print(f"[fetch_live] Hiba: {e} (kísérlet {attempt+1}/{max_retries})")
+        if attempt < max_retries - 1:
+            time.sleep(backoff * (attempt + 1))
+    print("[fetch_live] Minden próbálkozás sikertelen – kihagyva.")
+    return []
 
 # ========= SZKENNER =========
 
 def scan_next_day():
     tz = pytz.timezone(TIMEZONE)
     target = (datetime.now(tz) + timedelta(days=1)).strftime('%Y-%m-%d')
-    send_telegram(f"🔬 <b>EXPERT v5.0 Deep Scan: {target}</b>")
+    send_telegram(f"🔬 <b>EXPERT v5.1 Deep Scan: {target}</b>")
     try:
         r = requests.get(f"{BASE_URL}/fixtures?date={target}", headers=HEADERS, timeout=30)
         matches = r.json().get("response", [])
@@ -278,7 +268,7 @@ def scan_next_day():
             f_name = f"expert_lista_{target}.xlsx"
             pd.DataFrame(valid).to_excel(f_name, index=False)
             send_telegram(f"✅ Deep Scan kész!", f_name)
-            sync_to_github([CACHE_FILE, f_name, TEAM_STATS_CACHE_FILE], f"v5.0 Update: {target}")
+            sync_to_github([CACHE_FILE, f_name, TEAM_STATS_CACHE_FILE], f"v5.1 Update: {target}")
     except Exception as e: send_telegram(f"⚠️ Hiba: {e}")
 
 # ========= JELENTÉS ÉS TAKARÍTÁS =========
@@ -303,14 +293,14 @@ def get_final_report():
                         for it in s_set['statistics']:
                             if it['type'] == 'Corner Kicks': c_total += (it['value'] or 0)
                 m["EREDMÉNY"] = f"{h}-{a}"
-                # Fix: Over 2.5 és Over 1.5 ellenőrzés külön, a tényleges tipp alapján
+                # Tipp-tudatos GÓL SIKER kiértékelés
                 tipp = m.get("TIPP JAVASLAT", "")
                 if "Over 2.5" in tipp:
                     m["GÓL SIKER"] = "✅" if total_goals > 2.5 else "❌"
                 elif "Over 1.5" in tipp:
                     m["GÓL SIKER"] = "✅" if total_goals > 1.5 else "❌"
                 else:
-                    m["GÓL SIKER"] = "✅" if total_goals > 1.5 else "❌"  # default: Over 1.5
+                    m["GÓL SIKER"] = "✅" if total_goals > 1.5 else "❌"
                 m["BTTS SIKER"] = "✅" if (h or 0) > 0 and (a or 0) > 0 else "❌"
                 m["SZÖGLET ÖSSZ"] = c_total
             final.append(m); time.sleep(1)
@@ -325,7 +315,6 @@ def get_final_report():
                     res = r[0]
                     h_f = res['goals']['home'] or 0
                     a_f = res['goals']['away'] or 0
-                    # Fix: Over 1.5 ellenőrzés – legalább 2 gól kell (> 1.5)
                     if (h_f + a_f) > 1.5:
                         live_wins += 1
             except: continue
@@ -344,7 +333,7 @@ def get_final_report():
 
 def main_loop():
     tz = pytz.timezone(TIMEZONE)
-    print("Bot v5.0 elindult (EV-Cache + Shot-Filter)...")
+    print("Bot v5.1 elindult (EV-Strict + Retry)...")
     while True:
         now = datetime.now(tz)
         if now.hour == 19 and now.minute == 0:  scan_next_day();      time.sleep(61)
@@ -355,52 +344,42 @@ def main_loop():
             today_m     = load_json(CACHE_FILE, {}).get(today_str, [])
             sent_alerts = load_json(SENT_ALERTS_FILE, [])
 
-            # ── EV cache betöltése a master builder napi output-jából ──
+            # EV cache betöltése – ha nincs tips fájl, nem engedjük át
             master_tips = load_master_tips_for_today(today_str)
 
             if today_m:
                 t_ids = [m['ID'] for m in today_m]
-                r = requests.get(f"{BASE_URL}/fixtures?live=all", headers=HEADERS, timeout=10)
 
-                for fx in r.json().get("response", []):
-                    mid     = fx["fixture"]["id"]
-                    min_    = fx["fixture"]["status"]["elapsed"] or 0
-                    h, a    = (fx["goals"]["home"] or 0), (fx["goals"]["away"] or 0)
+                # Retry logikával lekérjük az élő meccseket
+                live_fixtures = fetch_live_fixtures()
 
-                    # 1. SZŰRŐ: csak az előre kiszemelt meccseink
-                    if mid not in t_ids:
-                        continue
+                for fx in live_fixtures:
+                    mid  = fx["fixture"]["id"]
+                    min_ = fx["fixture"]["status"]["elapsed"] or 0
+                    h, a = (fx["goals"]["home"] or 0), (fx["goals"]["away"] or 0)
 
-                    # 2. SZŰRŐ: már küldtük-e?
-                    if str(mid) in sent_alerts:
-                        continue
+                    if mid not in t_ids:           continue
+                    if str(mid) in sent_alerts:    continue
+                    if not in_live_window(min_):   continue
+                    if (h + a) > 1:               continue
 
-                    # 3. SZŰRŐ: időablak (33-43 vagy 50-65 perc)
-                    if not in_live_window(min_):
-                        continue
-
-                    # 4. SZŰRŐ: gólszám <= 1 (van még tér Over 1.5-re)
-                    if (h + a) > 1:
-                        continue
-
-                    # 5. SZŰRŐ: lövés aktivitás
                     shot_stats = get_live_shot_stats(mid)
-                    if not is_active_game(shot_stats):
-                        continue
+                    if not is_active_game(shot_stats): continue
 
-                    # 6. SZŰRŐ: EV ellenőrzés a master builder cache-ből
+                    # EV STRICT: ha van master_tips de az EV nem elég, kihagyjuk.
+                    # Ha nincs tips fájl egyáltalán (üres dict), azt is kihagyjuk.
                     ev, model_p = get_ev_for_fixture(master_tips, mid)
-                    ev_ok = (ev is None) or (ev >= LIVE_MIN_EV)  # ha nincs master adat, átengedjük
-                    if not ev_ok:
+                    if not master_tips:
+                        # Nincs napi tips fájl – ne küldjünk vakra riasztást
+                        continue
+                    if ev is None or ev < LIVE_MIN_EV:
                         continue
 
-                    # ── Minden szűrőn átment: riasztás küldése ──
                     sog_str = shot_stats.get('shots_on_goal', 0)
                     st_str  = shot_stats.get('shots_total', 0)
                     da_str  = shot_stats.get('dangerous_att', 0)
-
-                    ev_display   = f"{ev*100:.1f}%" if ev is not None else "N/A"
-                    mp_display   = f"{model_p*100:.1f}%" if model_p is not None else "N/A"
+                    ev_display = f"{ev*100:.1f}%"
+                    mp_display = f"{model_p*100:.1f}%" if model_p is not None else "N/A"
 
                     send_telegram(
                         f"⚽ <b>LIVE: Over 1.5 🔥</b>\n"
@@ -427,7 +406,8 @@ def main_loop():
                     })
                     save_json(LIVE_HISTORY_FILE, hst)
 
-        except: pass
+        except Exception as e:
+            print(f"[main_loop] Váratlan hiba: {e}")
         time.sleep(40)
 
 if __name__ == "__main__":
