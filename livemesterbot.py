@@ -8,7 +8,7 @@ from threading import Thread
 # ========= RENDER ÉBREN TARTÓ =========
 app = Flask('')
 @app.route('/')
-def home(): return "LiveMesterBot EXPERT v5.3: Odds Drift"
+def home(): return "LiveMesterBot EXPERT v5.4: Restart-Safe"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -32,7 +32,7 @@ MASTER_TIPS_PREFIX    = "tips_"
 LIVE_HISTORY_FILE     = "live_history.json"
 SENT_ALERTS_FILE      = "sent_alerts.json"
 TEAM_STATS_CACHE_FILE = "team_stats_cache.json"
-ODDS_DRIFT_FILE       = "odds_drift.json"  # { fixture_id: {"last_odds": 1.52, "ts": "HH:MM"} }
+ODDS_DRIFT_FILE       = "odds_drift.json"
 
 # ========= LIVE LÖVÉS-SZŰRÉS KÜSZÖBÖK =========
 SHOTS_ON_GOAL_MIN   = 3
@@ -46,9 +46,8 @@ LIVE_WINDOWS = [
 
 LIVE_MIN_EV = 0.02
 
-# Odds drift küszöbök
-DRIFT_DROP_THRESHOLD   = 0.05   # >= 5% esés → "smart money" riasztás
-DRIFT_RISE_THRESHOLD   = 0.05   # >= 5% emelkedés → "gyengülő piac" figyelmeztetés
+DRIFT_DROP_THRESHOLD = 0.05
+DRIFT_RISE_THRESHOLD = 0.05
 
 # ========= SEGÉDFÜGGVÉNYEK =========
 
@@ -89,6 +88,44 @@ def sync_to_github(file_list, commit_message, delete_files=None):
         subprocess.run(["git", "commit", "-m", commit_message])
         subprocess.run(["git", "push", "origin", "HEAD:main", "--force"])
     except: pass
+
+# ========= SENT ALERTS – RESTART-BIZTOS DE-DUPLIKÁCIÓ =========
+#
+# A sent_alerts.json struktúrája:
+# { "2026-03-31": ["fixture_id_1", "fixture_id_2", ...], "2026-04-01": [...] }
+#
+# Kulcs: dátum (YYYY-MM-DD) + fixture_id string
+# Előny: Render restart után a fájl GitHub-ról visszatöltődik → nem küld dupla riasztást
+# A get_final_report() csak a tegnapelőtti és régebbi bejegyzéseket törli → a mai napot őrzi
+
+def load_sent_alerts(date_str):
+    """Visszaadja a mai napra már elküldött fixture_id-k listáját."""
+    data = load_json(SENT_ALERTS_FILE, {})
+    return data.get(date_str, [])
+
+def save_sent_alert(date_str, fixture_id):
+    """Hozzáadja a fixture_id-t a mai nap listájához, majd elmenti és pushol."""
+    data = load_json(SENT_ALERTS_FILE, {})
+    day_list = data.get(date_str, [])
+    fid_str = str(fixture_id)
+    if fid_str not in day_list:
+        day_list.append(fid_str)
+        data[date_str] = day_list
+        save_json(SENT_ALERTS_FILE, data)
+        # Azonnal szinkronizál GitHub-ra – restart után is megmarad
+        sync_to_github([SENT_ALERTS_FILE], f"sent_alert: {date_str}/{fid_str}")
+
+def cleanup_sent_alerts(today_str):
+    """
+    Törli a 2 napnál régebbi bejegyzéseket a sent_alerts.json-ből.
+    A mai és tegnapi napot megtartja (biztonsági puffer).
+    """
+    data = load_json(SENT_ALERTS_FILE, {})
+    tz = pytz.timezone(TIMEZONE)
+    cutoff = (datetime.now(tz) - timedelta(days=2)).strftime('%Y-%m-%d')
+    cleaned = {k: v for k, v in data.items() if k >= cutoff}
+    if cleaned != data:
+        save_json(SENT_ALERTS_FILE, cleaned)
 
 # ========= TAKARÍTÁS (7 NAPNÁL RÉGEBBI EXCEL + TIPS JSON) =========
 
@@ -173,13 +210,8 @@ def fetch_live_odds(fixture_id):
     return None
 
 def build_odds_line(live_odds, prematch_odds, model_p, drift_info=None):
-    """
-    Összeállítja az odds sort a Telegram üzenethez.
-    drift_info: dict {"prev": float, "pct": float, "direction": "drop"|"rise"} vagy None
-    """
     fair_odds = round(1.0 / model_p, 2) if model_p and model_p > 0 else None
     lines = []
-
     if live_odds is not None:
         value_ok  = fair_odds is not None and live_odds >= fair_odds
         value_str = "✅ VALUE" if value_ok else "⚠️ alacsony"
@@ -188,64 +220,38 @@ def build_odds_line(live_odds, prematch_odds, model_p, drift_info=None):
     elif prematch_odds is not None:
         fair_str = f" | fair: {fair_odds}" if fair_odds else ""
         lines.append(f"💰 Pre-match odds: {prematch_odds}{fair_str} (live nem elérhető)")
-
     if drift_info:
+        pct = drift_info["pct"]
         prev = drift_info["prev"]
-        pct  = drift_info["pct"]
         if drift_info["direction"] == "drop":
             lines.append(f"📉 <b>Odds esett:</b> {prev} → {live_odds} (-{pct:.1f}%) — smart money jel!")
         else:
             lines.append(f"📈 Odds emelkedett: {prev} → {live_odds} (+{pct:.1f}%) — gyengülő piac")
-
     return "\n".join(lines)
 
-# ========= ODDS DRIFT KÖ VETÉS =========
+# ========= ODDS DRIFT KÖVETÉS =========
 
 def check_odds_drift(fixture_id, current_odds, now_str):
-    """
-    Összehasonlítja az aktuális oddsot az előző ciklus értékével.
-    Visszatér:
-      - None ha nincs előző adat vagy nincs jelentős mozgás
-      - dict {"prev", "pct", "direction"} ha küszöböt lépét
-    """
     if current_odds is None:
         return None
-
     drift_cache = load_json(ODDS_DRIFT_FILE, {})
     key = str(fixture_id)
     prev_entry = drift_cache.get(key)
-
-    # Mindig frissítjük a cache-t az aktuális odds-szal
     drift_cache[key] = {"last_odds": current_odds, "ts": now_str}
     save_json(ODDS_DRIFT_FILE, drift_cache)
-
     if prev_entry is None:
-        return None  # Nincs előző adat – első látás
-
+        return None
     prev_odds = prev_entry.get("last_odds")
     if prev_odds is None or prev_odds <= 0:
         return None
-
-    change_pct = (prev_odds - current_odds) / prev_odds  # Pozitív = esett, negatív = nőtt
-
+    change_pct = (prev_odds - current_odds) / prev_odds
     if change_pct >= DRIFT_DROP_THRESHOLD:
         return {"prev": prev_odds, "pct": change_pct * 100, "direction": "drop"}
     elif change_pct <= -DRIFT_RISE_THRESHOLD:
         return {"prev": prev_odds, "pct": abs(change_pct) * 100, "direction": "rise"}
-
     return None
 
-def cleanup_drift_cache(active_fixture_ids):
-    """
-    Eltávolítja az odds_drift.json-ből azokat a mérkőzéseket,
-    amelyek már nem élők (nap végén hívja meg a get_final_report).
-    """
-    drift_cache = load_json(ODDS_DRIFT_FILE, {})
-    active_keys = {str(fid) for fid in active_fixture_ids}
-    cleaned = {k: v for k, v in drift_cache.items() if k in active_keys}
-    save_json(ODDS_DRIFT_FILE, cleaned)
-
-# ========= STATISZTIKAI MOTOR (legacy - scan_next_day-hez) =========
+# ========= STATISZTIKAI MOTOR =========
 
 def get_team_detailed_data(team_id):
     cache = load_json(TEAM_STATS_CACHE_FILE, {})
@@ -277,19 +283,13 @@ def get_team_detailed_data(team_id):
         return res
     except: return None
 
-# ========= LÖVÉS STATISZTIKA LEKÉRÉSE =========
+# ========= LÖVÉS STATISZTIKA =========
 
 def get_live_shot_stats(fixture_id):
     try:
-        sr = requests.get(
-            f"{BASE_URL}/fixtures/statistics?fixture={fixture_id}",
-            headers=HEADERS, timeout=10
-        )
+        sr = requests.get(f"{BASE_URL}/fixtures/statistics?fixture={fixture_id}", headers=HEADERS, timeout=10)
         stats_resp = sr.json().get("response", [])
-        shots_on_goal = 0
-        shots_off_goal = 0
-        dangerous_att = 0
-        corners = 0
+        shots_on_goal = shots_off_goal = dangerous_att = corners = 0
         for team_stats in stats_resp:
             for stat in team_stats.get("statistics", []):
                 t = stat.get("type", "")
@@ -298,12 +298,8 @@ def get_live_shot_stats(fixture_id):
                 elif t == "Shots off Goal":    shots_off_goal += int(v)
                 elif t == "Dangerous Attacks": dangerous_att  += int(v)
                 elif t == "Corner Kicks":      corners        += int(v)
-        return {
-            "shots_on_goal":  shots_on_goal,
-            "shots_total":    shots_on_goal + shots_off_goal,
-            "dangerous_att":  dangerous_att,
-            "corner_total":   corners,
-        }
+        return {"shots_on_goal": shots_on_goal, "shots_total": shots_on_goal + shots_off_goal,
+                "dangerous_att": dangerous_att, "corner_total": corners}
     except:
         return {"shots_on_goal": 0, "shots_total": 0, "dangerous_att": 0, "corner_total": 0}
 
@@ -311,36 +307,27 @@ def is_active_game(shot_stats):
     sog = shot_stats.get("shots_on_goal", 0)
     st  = shot_stats.get("shots_total",  0)
     da  = shot_stats.get("dangerous_att", 0)
-    shots_ok = (sog >= SHOTS_ON_GOAL_MIN) or (st >= SHOTS_TOTAL_MIN)
-    att_ok   = (da >= DANGEROUS_ATT_MIN) and (sog >= 1)
-    return shots_ok or att_ok
+    return (sog >= SHOTS_ON_GOAL_MIN) or (st >= SHOTS_TOTAL_MIN) or ((da >= DANGEROUS_ATT_MIN) and (sog >= 1))
 
 def in_live_window(elapsed):
-    for (start, end) in LIVE_WINDOWS:
-        if start <= elapsed <= end:
-            return True
-    return False
+    return any(start <= elapsed <= end for start, end in LIVE_WINDOWS)
 
-# ========= LIVE FIXTURES LEKÉRÉSE RETRY LOGIKÁVAL =========
+# ========= LIVE FIXTURES RETRY =========
 
 def fetch_live_fixtures(max_retries=3, backoff=5):
     for attempt in range(max_retries):
         try:
             r = requests.get(f"{BASE_URL}/fixtures?live=all", headers=HEADERS, timeout=10)
             if r.status_code == 429:
-                wait = backoff * (2 ** attempt)
-                print(f"[fetch_live] 429 rate limit – várakozás {wait}s")
-                time.sleep(wait)
-                continue
+                time.sleep(backoff * (2 ** attempt)); continue
             r.raise_for_status()
             return r.json().get("response", [])
         except requests.exceptions.Timeout:
             print(f"[fetch_live] Timeout (kísérlet {attempt+1}/{max_retries})")
         except requests.exceptions.RequestException as e:
-            print(f"[fetch_live] Hiba: {e} (kísérlet {attempt+1}/{max_retries})")
+            print(f"[fetch_live] Hiba: {e}")
         if attempt < max_retries - 1:
             time.sleep(backoff * (attempt + 1))
-    print("[fetch_live] Minden próbálkozás sikertelen – kihagyva.")
     return []
 
 # ========= SZKENNER =========
@@ -348,7 +335,7 @@ def fetch_live_fixtures(max_retries=3, backoff=5):
 def scan_next_day():
     tz = pytz.timezone(TIMEZONE)
     target = (datetime.now(tz) + timedelta(days=1)).strftime('%Y-%m-%d')
-    send_telegram(f"🔬 <b>EXPERT v5.3 Deep Scan: {target}</b>")
+    send_telegram(f"🔬 <b>EXPERT v5.4 Deep Scan: {target}</b>")
     try:
         r = requests.get(f"{BASE_URL}/fixtures?date={target}", headers=HEADERS, timeout=30)
         matches = r.json().get("response", [])
@@ -363,8 +350,7 @@ def scan_next_day():
             if over_prob > 82: tips.append("Over 2.5")
             elif over_prob > 68: tips.append("Over 1.5")
             if h_data['avg_scored'] > 1.1 and a_data['avg_scored'] > 1.1 and h_data['btts_trend'] >= 2 and a_data['btts_trend'] >= 2:
-                if over_prob > 80: tips.append("Over 2.5 & BTTS")
-                else: tips.append("BTTS")
+                tips.append("Over 2.5 & BTTS" if over_prob > 80 else "BTTS")
             corner_info = "N/A"
             if h_data['corner_avg'] is not None and a_data['corner_avg'] is not None:
                 exp_corners = h_data['corner_avg'] + a_data['corner_avg']
@@ -372,20 +358,27 @@ def scan_next_day():
                 if exp_corners >= 10.5: tips.append("Corners Over 8.5")
                 elif exp_corners >= 9.2: tips.append("Corners Over 7.5")
             if tips:
-                valid.append({"ID": m['fixture']['id'], "IDŐPONT": (datetime.fromisoformat(m['fixture']['date'][:19]).replace(tzinfo=pytz.utc)).astimezone(tz).strftime('%H:%M'), "BAJNOKSÁG": m['league']['name'].upper(), "MECCS": f"{m['teams']['home']['name']} - {m['teams']['away']['name']}", "OVER 2.5 ESÉLY": f"{round(over_prob, 1)}%", "VÁRHATÓ SZÖGLET": corner_info, "TIPP JAVASLAT": " | ".join(tips)})
+                valid.append({"ID": m['fixture']['id'],
+                               "IDŐPONT": (datetime.fromisoformat(m['fixture']['date'][:19]).replace(tzinfo=pytz.utc)).astimezone(tz).strftime('%H:%M'),
+                               "BAJNOKSÁG": m['league']['name'].upper(),
+                               "MECCS": f"{m['teams']['home']['name']} - {m['teams']['away']['name']}",
+                               "OVER 2.5 ESÉLY": f"{round(over_prob, 1)}%",
+                               "VÁRHATÓ SZÖGLET": corner_info,
+                               "TIPP JAVASLAT": " | ".join(tips)})
         if valid:
             cache = load_json(CACHE_FILE, {})
             cache[target] = valid; save_json(CACHE_FILE, cache)
             f_name = f"expert_lista_{target}.xlsx"
             pd.DataFrame(valid).to_excel(f_name, index=False)
             send_telegram(f"✅ Deep Scan kész!", f_name)
-            sync_to_github([CACHE_FILE, f_name, TEAM_STATS_CACHE_FILE], f"v5.3 Update: {target}")
+            sync_to_github([CACHE_FILE, f_name, TEAM_STATS_CACHE_FILE], f"v5.4 Update: {target}")
     except Exception as e: send_telegram(f"⚠️ Hiba: {e}")
 
 # ========= JELENTÉS ÉS TAKARÍTÁS =========
 
 def get_final_report():
     tz = pytz.timezone(TIMEZONE)
+    today_str = datetime.now(tz).strftime('%Y-%m-%d')
     yest = (datetime.now(tz) - timedelta(days=1)).strftime('%Y-%m-%d')
     cache = load_json(CACHE_FILE, {})
     matches = cache.get(yest, [])
@@ -423,9 +416,7 @@ def get_final_report():
                 r = requests.get(f"{BASE_URL}/fixtures?id={lt['id']}", headers=HEADERS).json().get("response", [])
                 if r:
                     res = r[0]
-                    h_f = res['goals']['home'] or 0
-                    a_f = res['goals']['away'] or 0
-                    if (h_f + a_f) > 1.5:
+                    if (res['goals']['home'] or 0) + (res['goals']['away'] or 0) > 1.5:
                         live_wins += 1
             except: continue
         live_msg = f"📱 <b>LIVE ÖSSZESÍTŐ:</b>\n🎯 Küldött: {len(live_history)}\n✅ Nyert (O1.5): {live_wins}"
@@ -436,26 +427,29 @@ def get_final_report():
     send_telegram(live_msg, f_name)
     deleted_files = cleanup_old_files()
     save_json(LIVE_HISTORY_FILE, [])
-    save_json(SENT_ALERTS_FILE, [])
-    # Drift cache takarítás: nap végén ürítsük
     save_json(ODDS_DRIFT_FILE, {})
-    sync_to_github([f_name, LIVE_HISTORY_FILE, SENT_ALERTS_FILE, ODDS_DRIFT_FILE], f"Final Report: {yest}", delete_files=deleted_files)
+    # sent_alerts takarítás: régi napok törlése (mai nap megmarad)
+    cleanup_sent_alerts(today_str)
+    sync_to_github([f_name, LIVE_HISTORY_FILE, SENT_ALERTS_FILE, ODDS_DRIFT_FILE],
+                   f"Final Report: {yest}", delete_files=deleted_files)
 
 # ========= FŐ CIKLUS =========
 
 def main_loop():
     tz = pytz.timezone(TIMEZONE)
-    print("Bot v5.3 elindult (Odds Drift)...")
+    print("Bot v5.4 elindult (Restart-Safe)...")
     while True:
         now = datetime.now(tz)
-        if now.hour == 19 and now.minute == 0:  scan_next_day();      time.sleep(61)
-        if now.hour == 0  and now.minute == 10: get_final_report();   time.sleep(61)
+        if now.hour == 19 and now.minute == 0:  scan_next_day();    time.sleep(61)
+        if now.hour == 0  and now.minute == 10: get_final_report(); time.sleep(61)
 
         try:
-            today_str   = now.strftime('%Y-%m-%d')
-            now_str     = now.strftime('%H:%M')
-            today_m     = load_json(CACHE_FILE, {}).get(today_str, [])
-            sent_alerts = load_json(SENT_ALERTS_FILE, [])
+            today_str = now.strftime('%Y-%m-%d')
+            now_str   = now.strftime('%H:%M')
+            today_m   = load_json(CACHE_FILE, {}).get(today_str, [])
+
+            # Restart-biztos de-duplikáció: dátum+fixture_id alapon
+            sent_today = load_sent_alerts(today_str)
             master_tips = load_master_tips_for_today(today_str)
 
             if today_m:
@@ -470,31 +464,25 @@ def main_loop():
                     if mid not in t_ids: continue
                     if (h + a) > 1:     continue
 
-                    # Odds drift figyelés: minden ciklusban fut, nem csak sent után
                     current_live_odds = fetch_live_odds(mid)
                     drift_info = check_odds_drift(mid, current_live_odds, now_str)
 
-                    # Ha már küldtük az alap riasztást, de drift mozgás van → külön drift üzenet
-                    if str(mid) in sent_alerts and drift_info is not None:
+                    # Drift riasztás már elküldött meccsre
+                    if str(mid) in sent_today and drift_info is not None:
                         match_label = f"{fx['teams']['home']['name']} – {fx['teams']['away']['name']}"
                         if drift_info["direction"] == "drop":
-                            drift_msg = (
-                                f"📉 <b>ODDS DRIFT — {match_label}</b>\n"
-                                f"{drift_info['prev']} → {current_live_odds} (-{drift_info['pct']:.1f}%)\n"
-                                f"🟢 Smart money mozgás — erősödő piac!"
-                            )
+                            drift_msg = (f"📉 <b>ODDS DRIFT — {match_label}</b>\n"
+                                         f"{drift_info['prev']} → {current_live_odds} (-{drift_info['pct']:.1f}%)\n"
+                                         f"🟢 Smart money mozgás — erősödő piac!")
                         else:
-                            drift_msg = (
-                                f"📈 <b>ODDS DRIFT — {match_label}</b>\n"
-                                f"{drift_info['prev']} → {current_live_odds} (+{drift_info['pct']:.1f}%)\n"
-                                f"🟡 Gyengülő piac — óvatosság!"
-                            )
+                            drift_msg = (f"📈 <b>ODDS DRIFT — {match_label}</b>\n"
+                                         f"{drift_info['prev']} → {current_live_odds} (+{drift_info['pct']:.1f}%)\n"
+                                         f"🟡 Gyengülő piac — óvatosság!")
                         send_telegram(drift_msg)
                         continue
 
-                    # Alap riasztás (ha még nem ment ki)
-                    if str(mid) in sent_alerts:    continue
-                    if not in_live_window(min_):   continue
+                    if str(mid) in sent_today:  continue
+                    if not in_live_window(min_): continue
 
                     shot_stats = get_live_shot_stats(mid)
                     if not is_active_game(shot_stats): continue
@@ -506,41 +494,28 @@ def main_loop():
                     prematch_odds = get_prematch_odds_for_fixture(master_tips, mid)
                     odds_line     = build_odds_line(current_live_odds, prematch_odds, model_p, drift_info)
 
-                    sog_str    = shot_stats.get('shots_on_goal', 0)
-                    st_str     = shot_stats.get('shots_total', 0)
-                    da_str     = shot_stats.get('dangerous_att', 0)
-                    ev_display = f"{ev*100:.1f}%"
-                    mp_display = f"{model_p*100:.1f}%" if model_p is not None else "N/A"
-
                     msg = (
                         f"⚽ <b>LIVE: Over 1.5 🔥</b>\n"
                         f"{fx['teams']['home']['name']} – {fx['teams']['away']['name']}\n"
                         f"📍 {h}–{a} ({min_}. perc)\n"
-                        f"🎯 Kapura tartó: {sog_str} | Összes lövés: {st_str}\n"
-                        f"⚡ Veszélyes tám.: {da_str}\n"
-                        f"📊 EV: {ev_display} | P: {mp_display}"
+                        f"🎯 Kapura tartó: {shot_stats.get('shots_on_goal',0)} | Összes lövés: {shot_stats.get('shots_total',0)}\n"
+                        f"⚡ Veszélyes tám.: {shot_stats.get('dangerous_att',0)}\n"
+                        f"📊 EV: {ev*100:.1f}% | P: {f'{model_p*100:.1f}%' if model_p else 'N/A'}"
                     )
                     if odds_line:
                         msg += f"\n{odds_line}"
 
                     send_telegram(msg)
 
-                    sent_alerts.append(str(mid))
-                    save_json(SENT_ALERTS_FILE, sent_alerts)
+                    # Restart-biztos mentés: azonnal GitHub-ra szinkronizál
+                    save_sent_alert(today_str, mid)
 
                     hst = load_json(LIVE_HISTORY_FILE, [])
-                    hst.append({
-                        "id":            mid,
-                        "time":          now_str,
-                        "ev":            ev,
-                        "model_p":       model_p,
-                        "shots_on":      shot_stats.get('shots_on_goal'),
-                        "shots_tot":     shot_stats.get('shots_total'),
-                        "score_live":    f"{h}-{a}",
-                        "minute":        min_,
-                        "live_odds":     current_live_odds,
-                        "prematch_odds": prematch_odds,
-                    })
+                    hst.append({"id": mid, "time": now_str, "ev": ev, "model_p": model_p,
+                                 "shots_on": shot_stats.get('shots_on_goal'),
+                                 "shots_tot": shot_stats.get('shots_total'),
+                                 "score_live": f"{h}-{a}", "minute": min_,
+                                 "live_odds": current_live_odds, "prematch_odds": prematch_odds})
                     save_json(LIVE_HISTORY_FILE, hst)
 
         except Exception as e:
