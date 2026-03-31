@@ -296,13 +296,23 @@ def get_final_report():
             r = requests.get(f"{BASE_URL}/fixtures?id={m['ID']}", headers=HEADERS).json().get("response", [])
             if r:
                 res = r[0]; h, a = res['goals']['home'], res['goals']['away']
+                total_goals = (h or 0) + (a or 0)
                 c_total = 0
                 if 'statistics' in res:
                     for s_set in res['statistics']:
                         for it in s_set['statistics']:
                             if it['type'] == 'Corner Kicks': c_total += (it['value'] or 0)
-                m["EREDMÉNY"] = f"{h}-{a}"; m["GÓL SIKER"] = "✅" if (h+a) >= 2.5 else "❌"
-                m["BTTS SIKER"] = "✅" if (h or 0) > 0 and (a or 0) > 0 else "❌"; m["SZÖGLET ÖSSZ"] = c_total
+                m["EREDMÉNY"] = f"{h}-{a}"
+                # Fix: Over 2.5 és Over 1.5 ellenőrzés külön, a tényleges tipp alapján
+                tipp = m.get("TIPP JAVASLAT", "")
+                if "Over 2.5" in tipp:
+                    m["GÓL SIKER"] = "✅" if total_goals > 2.5 else "❌"
+                elif "Over 1.5" in tipp:
+                    m["GÓL SIKER"] = "✅" if total_goals > 1.5 else "❌"
+                else:
+                    m["GÓL SIKER"] = "✅" if total_goals > 1.5 else "❌"  # default: Over 1.5
+                m["BTTS SIKER"] = "✅" if (h or 0) > 0 and (a or 0) > 0 else "❌"
+                m["SZÖGLET ÖSSZ"] = c_total
             final.append(m); time.sleep(1)
         except: continue
     live_history = load_json(LIVE_HISTORY_FILE, [])
@@ -312,8 +322,12 @@ def get_final_report():
             try:
                 r = requests.get(f"{BASE_URL}/fixtures?id={lt['id']}", headers=HEADERS).json().get("response", [])
                 if r:
-                    res = r[0]; h_f, a_f = (res['goals']['home'] or 0), (res['goals']['away'] or 0)
-                    if (h_f + a_f) >= 2: live_wins += 1
+                    res = r[0]
+                    h_f = res['goals']['home'] or 0
+                    a_f = res['goals']['away'] or 0
+                    # Fix: Over 1.5 ellenőrzés – legalább 2 gól kell (> 1.5)
+                    if (h_f + a_f) > 1.5:
+                        live_wins += 1
             except: continue
         live_msg = f"📱 <b>LIVE ÖSSZESÍTŐ:</b>\n🎯 Küldött: {len(live_history)}\n✅ Nyert (O1.5): {live_wins}"
     else:
