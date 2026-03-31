@@ -8,7 +8,7 @@ from threading import Thread
 # ========= RENDER ÉBREN TARTÓ =========
 app = Flask('')
 @app.route('/')
-def home(): return "LiveMesterBot EXPERT v5.1: EV-Strict + Retry"
+def home(): return "LiveMesterBot EXPERT v5.2: Live Odds"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -130,6 +130,68 @@ def get_ev_for_fixture(master_tips, fixture_id):
         return None, None
     return tip.get("ev"), tip.get("model_p")
 
+def get_prematch_odds_for_fixture(master_tips, fixture_id):
+    """Pre-match Over 1.5 odds a tips_ fájlból (fallback ha nincs live odds)."""
+    tip = master_tips.get(int(fixture_id))
+    if tip is None:
+        return None
+    odds = tip.get("odds") or {}
+    return odds.get("over15")
+
+# ========= LIVE ODDS LEKÉRÉSE =========
+
+def fetch_live_odds(fixture_id):
+    """
+    Lekéri az aktuális live Over 1.5 oddsot az API-Football /odds/live endpointról.
+    Ha sikeres: float (pl. 1.43)
+    Ha nincs live odds (mérkőzés nem érhető el élőben a bookmakerektől): None
+    """
+    try:
+        r = requests.get(
+            f"{BASE_URL}/odds/live",
+            headers=HEADERS,
+            params={"fixture": fixture_id},
+            timeout=10
+        )
+        if r.status_code != 200:
+            return None
+        resp = r.json().get("response", [])
+        for item in resp:
+            for bookmaker in item.get("odds", []):
+                for bet in bookmaker.get("bets", []):
+                    bet_name = (bet.get("name") or "").lower()
+                    if "total" not in bet_name and "goals" not in bet_name:
+                        continue
+                    for val in bet.get("values", []):
+                        label = str(val.get("value") or "").lower()
+                        if label in ("over 1.5", "o 1.5", "over1.5"):
+                            try:
+                                return float(val["odd"])
+                            except (ValueError, TypeError):
+                                pass
+    except Exception as e:
+        print(f"[fetch_live_odds] Hiba ({fixture_id}): {e}")
+    return None
+
+def build_odds_line(live_odds, prematch_odds, model_p):
+    """
+    Összeállítja az odds sort a Telegram üzenethez.
+    - Ha van live odds: azt mutatja + fair odds + VALUE jelzés
+    - Ha csak pre-match odds van: azt mutatja (jelölve hogy pre-match)
+    - Ha egyik sincs: üres string
+    """
+    fair_odds = round(1.0 / model_p, 2) if model_p and model_p > 0 else None
+
+    if live_odds is not None:
+        value_ok = fair_odds is not None and live_odds >= fair_odds
+        value_str = "✅ VALUE" if value_ok else "⚠️ alacsony"
+        fair_str  = f" | fair: {fair_odds}" if fair_odds else ""
+        return f"💰 Live odds: <b>{live_odds}</b>{fair_str} → {value_str}"
+    elif prematch_odds is not None:
+        fair_str = f" | fair: {fair_odds}" if fair_odds else ""
+        return f"💰 Pre-match odds: {prematch_odds}{fair_str} (live nem elérhető)"
+    return ""
+
 # ========= STATISZTIKAI MOTOR (legacy - scan_next_day-hez) =========
 
 def get_team_detailed_data(team_id):
@@ -237,7 +299,7 @@ def fetch_live_fixtures(max_retries=3, backoff=5):
 def scan_next_day():
     tz = pytz.timezone(TIMEZONE)
     target = (datetime.now(tz) + timedelta(days=1)).strftime('%Y-%m-%d')
-    send_telegram(f"🔬 <b>EXPERT v5.1 Deep Scan: {target}</b>")
+    send_telegram(f"🔬 <b>EXPERT v5.2 Deep Scan: {target}</b>")
     try:
         r = requests.get(f"{BASE_URL}/fixtures?date={target}", headers=HEADERS, timeout=30)
         matches = r.json().get("response", [])
@@ -268,7 +330,7 @@ def scan_next_day():
             f_name = f"expert_lista_{target}.xlsx"
             pd.DataFrame(valid).to_excel(f_name, index=False)
             send_telegram(f"✅ Deep Scan kész!", f_name)
-            sync_to_github([CACHE_FILE, f_name, TEAM_STATS_CACHE_FILE], f"v5.1 Update: {target}")
+            sync_to_github([CACHE_FILE, f_name, TEAM_STATS_CACHE_FILE], f"v5.2 Update: {target}")
     except Exception as e: send_telegram(f"⚠️ Hiba: {e}")
 
 # ========= JELENTÉS ÉS TAKARÍTÁS =========
@@ -293,7 +355,6 @@ def get_final_report():
                         for it in s_set['statistics']:
                             if it['type'] == 'Corner Kicks': c_total += (it['value'] or 0)
                 m["EREDMÉNY"] = f"{h}-{a}"
-                # Tipp-tudatos GÓL SIKER kiértékelés
                 tipp = m.get("TIPP JAVASLAT", "")
                 if "Over 2.5" in tipp:
                     m["GÓL SIKER"] = "✅" if total_goals > 2.5 else "❌"
@@ -333,7 +394,7 @@ def get_final_report():
 
 def main_loop():
     tz = pytz.timezone(TIMEZONE)
-    print("Bot v5.1 elindult (EV-Strict + Retry)...")
+    print("Bot v5.2 elindult (Live Odds)...")
     while True:
         now = datetime.now(tz)
         if now.hour == 19 and now.minute == 0:  scan_next_day();      time.sleep(61)
@@ -344,13 +405,11 @@ def main_loop():
             today_m     = load_json(CACHE_FILE, {}).get(today_str, [])
             sent_alerts = load_json(SENT_ALERTS_FILE, [])
 
-            # EV cache betöltése – ha nincs tips fájl, nem engedjük át
             master_tips = load_master_tips_for_today(today_str)
 
             if today_m:
                 t_ids = [m['ID'] for m in today_m]
 
-                # Retry logikával lekérjük az élő meccseket
                 live_fixtures = fetch_live_fixtures()
 
                 for fx in live_fixtures:
@@ -366,22 +425,24 @@ def main_loop():
                     shot_stats = get_live_shot_stats(mid)
                     if not is_active_game(shot_stats): continue
 
-                    # EV STRICT: ha van master_tips de az EV nem elég, kihagyjuk.
-                    # Ha nincs tips fájl egyáltalán (üres dict), azt is kihagyjuk.
-                    ev, model_p = get_ev_for_fixture(master_tips, mid)
                     if not master_tips:
-                        # Nincs napi tips fájl – ne küldjünk vakra riasztást
                         continue
+                    ev, model_p = get_ev_for_fixture(master_tips, mid)
                     if ev is None or ev < LIVE_MIN_EV:
                         continue
 
-                    sog_str = shot_stats.get('shots_on_goal', 0)
-                    st_str  = shot_stats.get('shots_total', 0)
-                    da_str  = shot_stats.get('dangerous_att', 0)
+                    # Live odds lekérés + pre-match fallback
+                    live_odds    = fetch_live_odds(mid)
+                    prematch_odds = get_prematch_odds_for_fixture(master_tips, mid)
+                    odds_line    = build_odds_line(live_odds, prematch_odds, model_p)
+
+                    sog_str    = shot_stats.get('shots_on_goal', 0)
+                    st_str     = shot_stats.get('shots_total', 0)
+                    da_str     = shot_stats.get('dangerous_att', 0)
                     ev_display = f"{ev*100:.1f}%"
                     mp_display = f"{model_p*100:.1f}%" if model_p is not None else "N/A"
 
-                    send_telegram(
+                    msg = (
                         f"⚽ <b>LIVE: Over 1.5 🔥</b>\n"
                         f"{fx['teams']['home']['name']} – {fx['teams']['away']['name']}\n"
                         f"📍 {h}–{a} ({min_}. perc)\n"
@@ -389,20 +450,26 @@ def main_loop():
                         f"⚡ Veszélyes tám.: {da_str}\n"
                         f"📊 EV: {ev_display} | P: {mp_display}"
                     )
+                    if odds_line:
+                        msg += f"\n{odds_line}"
+
+                    send_telegram(msg)
 
                     sent_alerts.append(str(mid))
                     save_json(SENT_ALERTS_FILE, sent_alerts)
 
                     hst = load_json(LIVE_HISTORY_FILE, [])
                     hst.append({
-                        "id":         mid,
-                        "time":       now.strftime('%H:%M'),
-                        "ev":         ev,
-                        "model_p":    model_p,
-                        "shots_on":   shot_stats.get('shots_on_goal'),
-                        "shots_tot":  shot_stats.get('shots_total'),
-                        "score_live": f"{h}-{a}",
-                        "minute":     min_,
+                        "id":           mid,
+                        "time":         now.strftime('%H:%M'),
+                        "ev":           ev,
+                        "model_p":      model_p,
+                        "shots_on":     shot_stats.get('shots_on_goal'),
+                        "shots_tot":    shot_stats.get('shots_total'),
+                        "score_live":   f"{h}-{a}",
+                        "minute":       min_,
+                        "live_odds":    live_odds,
+                        "prematch_odds": prematch_odds,
                     })
                     save_json(LIVE_HISTORY_FILE, hst)
 
