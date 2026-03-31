@@ -1,4 +1,4 @@
-import subprocess, requests, time, os, json, math
+import subprocess, requests, time, os, json, math, logging
 from datetime import datetime, timedelta
 import pytz
 import pandas as pd
@@ -8,7 +8,7 @@ from threading import Thread
 # ========= RENDER ÉBREN TARTÓ =========
 app = Flask('')
 @app.route('/')
-def home(): return "LiveMesterBot EXPERT v5.4: Restart-Safe"
+def home(): return "LiveMesterBot EXPERT v5.5: Logfile"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -33,6 +33,7 @@ LIVE_HISTORY_FILE     = "live_history.json"
 SENT_ALERTS_FILE      = "sent_alerts.json"
 TEAM_STATS_CACHE_FILE = "team_stats_cache.json"
 ODDS_DRIFT_FILE       = "odds_drift.json"
+LOG_FILE              = "bot.log"
 
 # ========= LIVE LÖVÉS-SZŰRÉS KÜSZÖBÖK =========
 SHOTS_ON_GOAL_MIN   = 3
@@ -49,6 +50,36 @@ LIVE_MIN_EV = 0.02
 DRIFT_DROP_THRESHOLD = 0.05
 DRIFT_RISE_THRESHOLD = 0.05
 
+# ========= LOGGER INICIALIZÁLÁS =========
+#
+# Szintek:  DEBUG < INFO < WARNING < ERROR
+# bot.log formátum: 2026-03-31 18:15:42 | INFO    | [main_loop] Live scan fut...
+# Minden indításnál append mód – nem írja felül a régit.
+# A napi jelentés elküldi a log fájlt Telegramon, majd archivaing.
+
+def setup_logger():
+    logger = logging.getLogger("livemester")
+    logger.setLevel(logging.DEBUG)
+    if logger.handlers:  # Ne duplikáljonák restart után
+        return logger
+    fmt = logging.Formatter(
+        fmt="%(asctime)s | %(levelname)-7s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    # Fájl handler – append mód, UTF-8
+    fh = logging.FileHandler(LOG_FILE, encoding="utf-8", mode="a")
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(fmt)
+    # Konzol handler – Render logban is látszik
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.INFO)
+    ch.setFormatter(fmt)
+    logger.addHandler(fh)
+    logger.addHandler(ch)
+    return logger
+
+log = setup_logger()
+
 # ========= SEGÉDFÜGGVÉNYEK =========
 
 def send_telegram(message, file_path=None):
@@ -60,7 +91,8 @@ def send_telegram(message, file_path=None):
         else:
             url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
             requests.post(url, data={"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}, timeout=20)
-    except: pass
+    except Exception as e:
+        log.error(f"[send_telegram] Hiba: {e}")
 
 def load_json(file, default):
     if os.path.exists(file):
@@ -87,24 +119,17 @@ def sync_to_github(file_list, commit_message, delete_files=None):
             if os.path.exists(f): subprocess.run(["git", "add", f])
         subprocess.run(["git", "commit", "-m", commit_message])
         subprocess.run(["git", "push", "origin", "HEAD:main", "--force"])
-    except: pass
+        log.debug(f"[github] Szinkronizálva: {commit_message}")
+    except Exception as e:
+        log.error(f"[github] Szinkronizációs hiba: {e}")
 
 # ========= SENT ALERTS – RESTART-BIZTOS DE-DUPLIKÁCIÓ =========
-#
-# A sent_alerts.json struktúrája:
-# { "2026-03-31": ["fixture_id_1", "fixture_id_2", ...], "2026-04-01": [...] }
-#
-# Kulcs: dátum (YYYY-MM-DD) + fixture_id string
-# Előny: Render restart után a fájl GitHub-ról visszatöltődik → nem küld dupla riasztást
-# A get_final_report() csak a tegnapelőtti és régebbi bejegyzéseket törli → a mai napot őrzi
 
 def load_sent_alerts(date_str):
-    """Visszaadja a mai napra már elküldött fixture_id-k listáját."""
     data = load_json(SENT_ALERTS_FILE, {})
     return data.get(date_str, [])
 
 def save_sent_alert(date_str, fixture_id):
-    """Hozzáadja a fixture_id-t a mai nap listájához, majd elmenti és pushol."""
     data = load_json(SENT_ALERTS_FILE, {})
     day_list = data.get(date_str, [])
     fid_str = str(fixture_id)
@@ -112,14 +137,9 @@ def save_sent_alert(date_str, fixture_id):
         day_list.append(fid_str)
         data[date_str] = day_list
         save_json(SENT_ALERTS_FILE, data)
-        # Azonnal szinkronizál GitHub-ra – restart után is megmarad
         sync_to_github([SENT_ALERTS_FILE], f"sent_alert: {date_str}/{fid_str}")
 
 def cleanup_sent_alerts(today_str):
-    """
-    Törli a 2 napnál régebbi bejegyzéseket a sent_alerts.json-ből.
-    A mai és tegnapi napot megtartja (biztonsági puffer).
-    """
     data = load_json(SENT_ALERTS_FILE, {})
     tz = pytz.timezone(TIMEZONE)
     cutoff = (datetime.now(tz) - timedelta(days=2)).strftime('%Y-%m-%d')
@@ -127,7 +147,77 @@ def cleanup_sent_alerts(today_str):
     if cleaned != data:
         save_json(SENT_ALERTS_FILE, cleaned)
 
-# ========= TAKARÍTÁS (7 NAPNÁL RÉGEBBI EXCEL + TIPS JSON) =========
+# ========= LOG ÖSSZEFOGLALÓ ÉS ARCHIVÁLÁS =========
+
+def send_daily_log_summary():
+    """
+    Napi zárásnál (00:10) elküldi a bot.log-ot Telegramon,
+    majd archiválja (bot_YYYY-MM-DD.log) és üríti az aktuálist.
+    """
+    tz = pytz.timezone(TIMEZONE)
+    yest = (datetime.now(tz) - timedelta(days=1)).strftime('%Y-%m-%d')
+
+    if not os.path.exists(LOG_FILE):
+        log.info("[log_summary] Nincs log fájl – kihagyva.")
+        return
+
+    # Összeszedjünk néhány számot a logból
+    error_count   = 0
+    warning_count = 0
+    alert_count   = 0
+    drift_count   = 0
+
+    try:
+        with open(LOG_FILE, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        for line in lines:
+            if '| ERROR   |' in line: error_count   += 1
+            if '| WARNING |' in line: warning_count += 1
+            if '[ALERT]'  in line:    alert_count   += 1
+            if '[DRIFT]'  in line:    drift_count   += 1
+    except Exception as e:
+        log.error(f"[log_summary] Olvasási hiba: {e}")
+        return
+
+    # Távirát összefoglaló szöveg
+    summary = (
+        f"📝 <b>Bot.log — {yest}</b>\n"
+        f"🚨 Hibák: {error_count}\n"
+        f"⚠️ Figyelmeztetések: {warning_count}\n"
+        f"📲 Elküldött riasztások: {alert_count}\n"
+        f"📉 Odds drift jelzések: {drift_count}"
+    )
+
+    # Log fájl elküldése Telegramon, ha volt valami
+    if lines:
+        send_telegram(summary, LOG_FILE)
+    else:
+        send_telegram(summary)
+
+    # Archiválás: bot_YYYY-MM-DD.log
+    archive_name = f"bot_{yest}.log"
+    try:
+        os.rename(LOG_FILE, archive_name)
+        log.info(f"[log_summary] Log archiválva: {archive_name}")
+    except Exception as e:
+        log.error(f"[log_summary] Archiválási hiba: {e}")
+        archive_name = None
+
+    # 7 napnál régebbi archivumok törlése
+    cutoff_dt = datetime.now() - timedelta(days=7)
+    for f in os.listdir('.'):
+        if f.startswith("bot_") and f.endswith(".log"):
+            try:
+                date_str = f[4:14]  # bot_YYYY-MM-DD.log
+                if datetime.strptime(date_str, '%Y-%m-%d') < cutoff_dt:
+                    os.remove(f)
+                    log.info(f"[log_summary] Régi log törölve: {f}")
+            except: pass
+
+    # Új (fresh) log indítása – setup_logger append módot használ,
+    # a rename után automatikusan üres fájlba ír
+
+# ========= TAKARÍTÁS =========
 
 def cleanup_old_files():
     files_to_delete = []
@@ -141,6 +231,7 @@ def cleanup_old_files():
                 if file_date < cutoff:
                     os.remove(f)
                     files_to_delete.append(f)
+                    log.info(f"[cleanup] Törölve: {f}")
             except: pass
         if f.startswith(MASTER_TIPS_PREFIX) and f.endswith(".json"):
             try:
@@ -149,6 +240,7 @@ def cleanup_old_files():
                 if file_date < cutoff:
                     os.remove(f)
                     files_to_delete.append(f)
+                    log.info(f"[cleanup] Törölve: {f}")
             except: pass
     return files_to_delete
 
@@ -183,12 +275,8 @@ def get_prematch_odds_for_fixture(master_tips, fixture_id):
 
 def fetch_live_odds(fixture_id):
     try:
-        r = requests.get(
-            f"{BASE_URL}/odds/live",
-            headers=HEADERS,
-            params={"fixture": fixture_id},
-            timeout=10
-        )
+        r = requests.get(f"{BASE_URL}/odds/live", headers=HEADERS,
+                         params={"fixture": fixture_id}, timeout=10)
         if r.status_code != 200:
             return None
         resp = r.json().get("response", [])
@@ -206,7 +294,7 @@ def fetch_live_odds(fixture_id):
                             except (ValueError, TypeError):
                                 pass
     except Exception as e:
-        print(f"[fetch_live_odds] Hiba ({fixture_id}): {e}")
+        log.warning(f"[fetch_live_odds] Hiba ({fixture_id}): {e}")
     return None
 
 def build_odds_line(live_odds, prematch_odds, model_p, drift_info=None):
@@ -281,7 +369,9 @@ def get_team_detailed_data(team_id):
         cache[str(team_id)] = res
         save_json(TEAM_STATS_CACHE_FILE, cache)
         return res
-    except: return None
+    except Exception as e:
+        log.warning(f"[team_data] Hiba ({team_id}): {e}")
+        return None
 
 # ========= LÖVÉS STATISZTIKA =========
 
@@ -300,7 +390,8 @@ def get_live_shot_stats(fixture_id):
                 elif t == "Corner Kicks":      corners        += int(v)
         return {"shots_on_goal": shots_on_goal, "shots_total": shots_on_goal + shots_off_goal,
                 "dangerous_att": dangerous_att, "corner_total": corners}
-    except:
+    except Exception as e:
+        log.warning(f"[shot_stats] Hiba ({fixture_id}): {e}")
         return {"shots_on_goal": 0, "shots_total": 0, "dangerous_att": 0, "corner_total": 0}
 
 def is_active_game(shot_stats):
@@ -319,15 +410,18 @@ def fetch_live_fixtures(max_retries=3, backoff=5):
         try:
             r = requests.get(f"{BASE_URL}/fixtures?live=all", headers=HEADERS, timeout=10)
             if r.status_code == 429:
-                time.sleep(backoff * (2 ** attempt)); continue
+                wait = backoff * (2 ** attempt)
+                log.warning(f"[fetch_live] 429 rate limit – várakozás {wait}s")
+                time.sleep(wait); continue
             r.raise_for_status()
             return r.json().get("response", [])
         except requests.exceptions.Timeout:
-            print(f"[fetch_live] Timeout (kísérlet {attempt+1}/{max_retries})")
+            log.warning(f"[fetch_live] Timeout (kísérlet {attempt+1}/{max_retries})")
         except requests.exceptions.RequestException as e:
-            print(f"[fetch_live] Hiba: {e}")
+            log.warning(f"[fetch_live] Hiba: {e} (kísérlet {attempt+1}/{max_retries})")
         if attempt < max_retries - 1:
             time.sleep(backoff * (attempt + 1))
+    log.error("[fetch_live] Minden próbálkozás sikertelen.")
     return []
 
 # ========= SZKENNER =========
@@ -335,10 +429,12 @@ def fetch_live_fixtures(max_retries=3, backoff=5):
 def scan_next_day():
     tz = pytz.timezone(TIMEZONE)
     target = (datetime.now(tz) + timedelta(days=1)).strftime('%Y-%m-%d')
-    send_telegram(f"🔬 <b>EXPERT v5.4 Deep Scan: {target}</b>")
+    log.info(f"[scan] Deep Scan indul: {target}")
+    send_telegram(f"🔬 <b>EXPERT v5.5 Deep Scan: {target}</b>")
     try:
         r = requests.get(f"{BASE_URL}/fixtures?date={target}", headers=HEADERS, timeout=30)
         matches = r.json().get("response", [])
+        log.info(f"[scan] {len(matches)} meccset talált {target}-re")
         valid = []
         for m in matches:
             h_data = get_team_detailed_data(m['teams']['home']['id'])
@@ -365,14 +461,17 @@ def scan_next_day():
                                "OVER 2.5 ESÉLY": f"{round(over_prob, 1)}%",
                                "VÁRHATÓ SZÖGLET": corner_info,
                                "TIPP JAVASLAT": " | ".join(tips)})
+        log.info(f"[scan] {len(valid)} tipp jelolt: {target}")
         if valid:
             cache = load_json(CACHE_FILE, {})
             cache[target] = valid; save_json(CACHE_FILE, cache)
             f_name = f"expert_lista_{target}.xlsx"
             pd.DataFrame(valid).to_excel(f_name, index=False)
-            send_telegram(f"✅ Deep Scan kész!", f_name)
-            sync_to_github([CACHE_FILE, f_name, TEAM_STATS_CACHE_FILE], f"v5.4 Update: {target}")
-    except Exception as e: send_telegram(f"⚠️ Hiba: {e}")
+            send_telegram(f"✅ Deep Scan kész! ({len(valid)} tipp)", f_name)
+            sync_to_github([CACHE_FILE, f_name, TEAM_STATS_CACHE_FILE], f"v5.5 Update: {target}")
+    except Exception as e:
+        log.error(f"[scan] Hiba: {e}")
+        send_telegram(f"⚠️ Scan hiba: {e}")
 
 # ========= JELENTÉS ÉS TAKARÍTÁS =========
 
@@ -380,9 +479,14 @@ def get_final_report():
     tz = pytz.timezone(TIMEZONE)
     today_str = datetime.now(tz).strftime('%Y-%m-%d')
     yest = (datetime.now(tz) - timedelta(days=1)).strftime('%Y-%m-%d')
+    log.info(f"[report] Napi zárás indul: {yest}")
     cache = load_json(CACHE_FILE, {})
     matches = cache.get(yest, [])
-    if not matches: return
+    if not matches:
+        log.info("[report] Nincs adat a tegnapi napra.")
+        # Log mégis elküldünk
+        send_daily_log_summary()
+        return
     send_telegram(f"📊 <b>Összetett jelentés ({yest})</b>")
     final = []
     for m in matches:
@@ -406,8 +510,11 @@ def get_final_report():
                     m["GÓL SIKER"] = "✅" if total_goals > 1.5 else "❌"
                 m["BTTS SIKER"] = "✅" if (h or 0) > 0 and (a or 0) > 0 else "❌"
                 m["SZÖGLET ÖSSZ"] = c_total
+                log.info(f"[report] {m['MECCS']}: {h}-{a} | Gól: {m['GÓL SIKER']}")
             final.append(m); time.sleep(1)
-        except: continue
+        except Exception as e:
+            log.error(f"[report] Meccs feldolgozási hiba: {e}")
+            continue
     live_history = load_json(LIVE_HISTORY_FILE, [])
     live_wins = 0
     if live_history:
@@ -420,16 +527,19 @@ def get_final_report():
                         live_wins += 1
             except: continue
         live_msg = f"📱 <b>LIVE ÖSSZESÍTŐ:</b>\n🎯 Küldött: {len(live_history)}\n✅ Nyert (O1.5): {live_wins}"
+        log.info(f"[report] Live: {len(live_history)} tipp, {live_wins} nyertes")
     else:
         live_msg = "📱 <b>LIVE ÖSSZESÍTŐ:</b>\nMa nem volt élő tipp."
+        log.info("[report] Ma nem volt élő tipp.")
     f_name = f"report_{yest}.xlsx"
     pd.DataFrame(final).to_excel(f_name, index=False)
     send_telegram(live_msg, f_name)
     deleted_files = cleanup_old_files()
     save_json(LIVE_HISTORY_FILE, [])
     save_json(ODDS_DRIFT_FILE, {})
-    # sent_alerts takarítás: régi napok törlése (mai nap megmarad)
     cleanup_sent_alerts(today_str)
+    # Log összefoglaló elküldése és archiválása
+    send_daily_log_summary()
     sync_to_github([f_name, LIVE_HISTORY_FILE, SENT_ALERTS_FILE, ODDS_DRIFT_FILE],
                    f"Final Report: {yest}", delete_files=deleted_files)
 
@@ -437,29 +547,34 @@ def get_final_report():
 
 def main_loop():
     tz = pytz.timezone(TIMEZONE)
-    print("Bot v5.4 elindult (Restart-Safe)...")
+    log.info("=" * 50)
+    log.info("Bot v5.5 elindult (Logfile).")
+    log.info(f"LIVE_MIN_EV={LIVE_MIN_EV} | WINDOWS={LIVE_WINDOWS}")
+    log.info("=" * 50)
     while True:
         now = datetime.now(tz)
-        if now.hour == 19 and now.minute == 0:  scan_next_day();    time.sleep(61)
-        if now.hour == 0  and now.minute == 10: get_final_report(); time.sleep(61)
+        if now.hour == 19 and now.minute == 0:
+            scan_next_day(); time.sleep(61)
+        if now.hour == 0 and now.minute == 10:
+            get_final_report(); time.sleep(61)
 
         try:
             today_str = now.strftime('%Y-%m-%d')
             now_str   = now.strftime('%H:%M')
             today_m   = load_json(CACHE_FILE, {}).get(today_str, [])
-
-            # Restart-biztos de-duplikáció: dátum+fixture_id alapon
-            sent_today = load_sent_alerts(today_str)
+            sent_today  = load_sent_alerts(today_str)
             master_tips = load_master_tips_for_today(today_str)
 
             if today_m:
                 t_ids = [m['ID'] for m in today_m]
                 live_fixtures = fetch_live_fixtures()
+                log.debug(f"[main_loop] {len(live_fixtures)} élő meccs | {now_str}")
 
                 for fx in live_fixtures:
                     mid  = fx["fixture"]["id"]
                     min_ = fx["fixture"]["status"]["elapsed"] or 0
                     h, a = (fx["goals"]["home"] or 0), (fx["goals"]["away"] or 0)
+                    match_label = f"{fx['teams']['home']['name']} – {fx['teams']['away']['name']}"
 
                     if mid not in t_ids: continue
                     if (h + a) > 1:     continue
@@ -469,7 +584,7 @@ def main_loop():
 
                     # Drift riasztás már elküldött meccsre
                     if str(mid) in sent_today and drift_info is not None:
-                        match_label = f"{fx['teams']['home']['name']} – {fx['teams']['away']['name']}"
+                        log.info(f"[DRIFT] {match_label} | {drift_info['direction']} {drift_info['pct']:.1f}%")
                         if drift_info["direction"] == "drop":
                             drift_msg = (f"📉 <b>ODDS DRIFT — {match_label}</b>\n"
                                          f"{drift_info['prev']} → {current_live_odds} (-{drift_info['pct']:.1f}%)\n"
@@ -482,21 +597,29 @@ def main_loop():
                         continue
 
                     if str(mid) in sent_today:  continue
-                    if not in_live_window(min_): continue
+                    if not in_live_window(min_):
+                        log.debug(f"[main_loop] {match_label} – {min_}. perc – ablakból kiesett")
+                        continue
 
                     shot_stats = get_live_shot_stats(mid)
-                    if not is_active_game(shot_stats): continue
+                    if not is_active_game(shot_stats):
+                        log.debug(f"[main_loop] {match_label} – low activity (sog={shot_stats['shots_on_goal']}), skip")
+                        continue
 
-                    if not master_tips: continue
+                    if not master_tips:
+                        log.warning(f"[main_loop] Nincs master tips fájl – {today_str}")
+                        continue
                     ev, model_p = get_ev_for_fixture(master_tips, mid)
-                    if ev is None or ev < LIVE_MIN_EV: continue
+                    if ev is None or ev < LIVE_MIN_EV:
+                        log.debug(f"[main_loop] {match_label} – EV={ev} < {LIVE_MIN_EV}, skip")
+                        continue
 
                     prematch_odds = get_prematch_odds_for_fixture(master_tips, mid)
                     odds_line     = build_odds_line(current_live_odds, prematch_odds, model_p, drift_info)
 
                     msg = (
                         f"⚽ <b>LIVE: Over 1.5 🔥</b>\n"
-                        f"{fx['teams']['home']['name']} – {fx['teams']['away']['name']}\n"
+                        f"{match_label}\n"
                         f"📍 {h}–{a} ({min_}. perc)\n"
                         f"🎯 Kapura tartó: {shot_stats.get('shots_on_goal',0)} | Összes lövés: {shot_stats.get('shots_total',0)}\n"
                         f"⚡ Veszélyes tám.: {shot_stats.get('dangerous_att',0)}\n"
@@ -506,8 +629,8 @@ def main_loop():
                         msg += f"\n{odds_line}"
 
                     send_telegram(msg)
+                    log.info(f"[ALERT] {match_label} | {min_}. perc | EV={ev*100:.1f}% | odds={current_live_odds}")
 
-                    # Restart-biztos mentés: azonnal GitHub-ra szinkronizál
                     save_sent_alert(today_str, mid)
 
                     hst = load_json(LIVE_HISTORY_FILE, [])
@@ -519,7 +642,7 @@ def main_loop():
                     save_json(LIVE_HISTORY_FILE, hst)
 
         except Exception as e:
-            print(f"[main_loop] Váratlan hiba: {e}")
+            log.error(f"[main_loop] Váratlan hiba: {e}")
         time.sleep(40)
 
 if __name__ == "__main__":
