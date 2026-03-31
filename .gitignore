@@ -6,11 +6,6 @@ logs/
 *.log
 .DS_Store
 
-# Cache fájlok – ne kerüljenek repóba (nagy méret, futás közben generálódnak)
-foci_master_cache.json
-team_stats_cache.json
-live_history.json
-sent_alerts.json
-
-# Napi tips JSON output (foci_master_builder generálja)
-tips_*.json
+# Generált riportok (Telegramra már elküldve, repóban felesleges)
+report_*.xlsx
+expert_lista_*.xlsx
