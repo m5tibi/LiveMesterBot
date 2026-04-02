@@ -84,11 +84,23 @@ def send_telegram(message, file_path=None):
     except Exception as e:
         log.error(f"[send_telegram] Hiba: {e}")
 
-def load_json(file, default):
+def load_json(file, default, expected_type=None):
+    """
+    JSON fájl biztonságos betöltése.
+    Ha expected_type meg van adva (pl. dict vagy list), ellenőrzi a típust.
+    Hibás típus vagy olvasási hiba esetén a default értéket adja vissza és logol.
+    """
     if os.path.exists(file):
         try:
-            with open(file, 'r') as f: return json.load(f)
-        except: return default
+            with open(file, 'r') as f:
+                data = json.load(f)
+            if expected_type is not None and not isinstance(data, expected_type):
+                log.error(f"[load_json] {file} hibás típus: várt={expected_type.__name__}, kapott={type(data).__name__} → default visszaadva")
+                return default
+            return data
+        except Exception as e:
+            log.error(f"[load_json] {file} olvasási hiba: {e} → default visszaadva")
+            return default
     return default
 
 def save_json(file, data):
@@ -115,10 +127,11 @@ def sync_to_github(file_list, commit_message, delete_files=None):
 # ========= SENT ALERTS =========
 
 def load_sent_alerts(date_str):
-    return load_json(SENT_ALERTS_FILE, {}).get(date_str, [])
+    data = load_json(SENT_ALERTS_FILE, {}, dict)
+    return data.get(date_str, [])
 
 def save_sent_alert(date_str, fixture_id):
-    data = load_json(SENT_ALERTS_FILE, {})
+    data = load_json(SENT_ALERTS_FILE, {}, dict)
     day_list = data.get(date_str, [])
     fid_str = str(fixture_id)
     if fid_str not in day_list:
@@ -128,7 +141,7 @@ def save_sent_alert(date_str, fixture_id):
         sync_to_github([SENT_ALERTS_FILE], f"sent_alert: {date_str}/{fid_str}")
 
 def cleanup_sent_alerts(today_str):
-    data = load_json(SENT_ALERTS_FILE, {})
+    data = load_json(SENT_ALERTS_FILE, {}, dict)
     tz = pytz.timezone(TIMEZONE)
     cutoff = (datetime.now(tz) - timedelta(days=2)).strftime('%Y-%m-%d')
     cleaned = {k: v for k, v in data.items() if k >= cutoff}
@@ -186,7 +199,10 @@ def update_backtest(live_history_entries, date_str):
     minden live tipp-re, és bejegyzi a backtest.json-ba.
     Visszatér a napi összefoglaló dict-tel.
     """
-    bt = load_json(BACKTEST_FILE, {"entries": []})
+    bt = load_json(BACKTEST_FILE, {"entries": []}, dict)
+    if not isinstance(bt.get("entries"), list):
+        log.error(f"[backtest] Hibás backtest struktúra, alaphelyzetbe állítva.")
+        bt = {"entries": []}
     new_entries = []
 
     for lt in live_history_entries:
@@ -234,8 +250,10 @@ def build_dashboard_message(new_entries):
     """
     Kumulatív dashboard üzenet építése a teljes backtest.json alapján.
     """
-    bt = load_json(BACKTEST_FILE, {"entries": []})
-    all_e = bt["entries"]
+    bt = load_json(BACKTEST_FILE, {"entries": []}, dict)
+    all_e = bt.get("entries", [])
+    if not isinstance(all_e, list):
+        all_e = []
 
     if not all_e:
         return "📊 <b>Dashboard</b>\nNincs elég adat még."
@@ -327,6 +345,9 @@ def load_master_tips_for_today(date_str):
     fname = f"{MASTER_TIPS_PREFIX}{date_str}.json"
     data = load_json(fname, None)
     if data is None: return {}
+    if not isinstance(data, dict):
+        log.error(f"[load_master_tips] {fname} hibás típus: {type(data).__name__} → üres dict")
+        return {}
     return {int(t["fixture_id"]): t for t in data.get("tips", []) if t.get("fixture_id") is not None}
 
 def get_ev_for_fixture(master_tips, fixture_id):
@@ -378,7 +399,7 @@ def build_odds_line(live_odds, prematch_odds, model_p, drift_info=None):
 
 def check_odds_drift(fixture_id, current_odds, now_str):
     if current_odds is None: return None
-    dc = load_json(ODDS_DRIFT_FILE, {})
+    dc = load_json(ODDS_DRIFT_FILE, {}, dict)
     key = str(fixture_id)
     prev = dc.get(key)
     dc[key] = {"last_odds": current_odds, "ts": now_str}
@@ -394,7 +415,7 @@ def check_odds_drift(fixture_id, current_odds, now_str):
 # ========= STATISZTIKAI MOTOR =========
 
 def get_team_detailed_data(team_id):
-    cache = load_json(TEAM_STATS_CACHE_FILE, {})
+    cache = load_json(TEAM_STATS_CACHE_FILE, {}, dict)
     if str(team_id) in cache: return cache[str(team_id)]
     try:
         matches = requests.get(f"{BASE_URL}/fixtures?team={team_id}&last=10",
@@ -503,7 +524,9 @@ def scan_next_day():
                                "TIPP JAVASLAT": " | ".join(tips)})
         log.info(f"[scan] {len(valid)} tipp: {target}")
         if valid:
-            cache = load_json(CACHE_FILE, {}); cache[target] = valid; save_json(CACHE_FILE, cache)
+            cache = load_json(CACHE_FILE, {}, dict)
+            cache[target] = valid
+            save_json(CACHE_FILE, cache)
             fn = f"expert_lista_{target}.xlsx"; pd.DataFrame(valid).to_excel(fn, index=False)
             send_telegram(f"✅ Deep Scan kész! ({len(valid)} tipp)", fn)
             sync_to_github([CACHE_FILE, fn, TEAM_STATS_CACHE_FILE], f"v5.6 Update: {target}")
@@ -517,8 +540,11 @@ def get_final_report():
     today_str = datetime.now(tz).strftime('%Y-%m-%d')
     yest      = (datetime.now(tz) - timedelta(days=1)).strftime('%Y-%m-%d')
     log.info(f"[report] Napi zárás: {yest}")
-    cache   = load_json(CACHE_FILE, {})
+    cache = load_json(CACHE_FILE, {}, dict)
     matches = cache.get(yest, [])
+    if not isinstance(matches, list):
+        log.error(f"[report] Hibás matches típus a cache-ben: {type(matches).__name__}")
+        matches = []
     if not matches:
         log.info("[report] Nincs adat tegnap.")
         send_daily_log_summary(); return
@@ -549,7 +575,7 @@ def get_final_report():
             log.error(f"[report] Meccs hiba: {e}"); continue
 
     # Live history kigyűjtése + backtest frissítés
-    live_history = load_json(LIVE_HISTORY_FILE, [])
+    live_history = load_json(LIVE_HISTORY_FILE, [], list)
     live_wins = 0
     if live_history:
         for lt in live_history:
@@ -600,9 +626,17 @@ def main_loop():
         try:
             today_str   = now.strftime('%Y-%m-%d')
             now_str     = now.strftime('%H:%M')
-            today_m     = load_json(CACHE_FILE, {}).get(today_str, [])
-            sent_today  = load_sent_alerts(today_str)
-            master_tips = load_master_tips_for_today(today_str)
+
+            # ── Védett cache betöltés ──────────────────────────────────────
+            cache_data = load_json(CACHE_FILE, {}, dict)
+            today_m    = cache_data.get(today_str, [])
+            if not isinstance(today_m, list):
+                log.error(f"[main_loop] today_m hibás típus ({type(today_m).__name__}), kiürítve.")
+                today_m = []
+
+            sent_today  = load_sent_alerts(today_str)   # load_sent_alerts már védett
+            master_tips = load_master_tips_for_today(today_str)  # load_master_tips_for_today már védett
+            # ──────────────────────────────────────────────────────────────
 
             if today_m:
                 t_ids = [m['ID'] for m in today_m]
@@ -661,7 +695,7 @@ def main_loop():
                     log.info(f"[ALERT] {label} | {min_}' | EV={ev*100:.1f}% | odds={lo}")
                     save_sent_alert(today_str, mid)
 
-                    hst = load_json(LIVE_HISTORY_FILE, [])
+                    hst = load_json(LIVE_HISTORY_FILE, [], list)
                     hst.append({"id": mid, "time": now_str, "ev": ev, "model_p": model_p,
                                  "shots_on": ss["shots_on_goal"], "shots_tot": ss["shots_total"],
                                  "score_live": f"{h}-{a}", "minute": min_,
