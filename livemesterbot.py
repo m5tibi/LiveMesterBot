@@ -8,7 +8,7 @@ from threading import Thread
 # ========= RENDER ÉBREN TARTÓ =========
 app = Flask('')
 @app.route('/')
-def home(): return "LiveMesterBot EXPERT v5.7: Dashboard"
+def home(): return "LiveMesterBot EXPERT v5.8: Dashboard"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -110,14 +110,9 @@ def api_get_with_retry(url, params=None, max_retries=RETRY_MAX, backoff=RETRY_BA
 
 
 # =========================================================
-# FÁJL INICIALIZÁCIÓ — induláskor helyes formátum garantálva
+# FÁJL INICIALIZÁCIÓ
 # =========================================================
 def init_state_files():
-    """
-    Állapotfájlok inicializálása és migrációja indításkor.
-    Ha bármelyik fájl hiányzik vagy hibás típusú, újraírja a helyes alapértéket,
-    majd szinkronizálja vissza GitHubra, hogy a következő deploy is helyes fájlt kapjon.
-    """
     fixes = [
         (SENT_ALERTS_FILE,  {},  dict),
         (ODDS_DRIFT_FILE,   {},  dict),
@@ -128,22 +123,18 @@ def init_state_files():
     for fname, default, expected_type in fixes:
         needs_fix = False
         if not os.path.exists(fname):
-            needs_fix = True
-            reason = "hiányzik"
+            needs_fix = True; reason = "hiányzik"
         else:
             try:
-                with open(fname, 'r') as f:
-                    data = json.load(f)
+                with open(fname, 'r') as f: data = json.load(f)
                 if not isinstance(data, expected_type):
                     needs_fix = True
                     reason = f"hibás típus ({type(data).__name__} helyett {expected_type.__name__} kell)"
             except Exception as e:
-                needs_fix = True
-                reason = f"parse hiba: {e}"
+                needs_fix = True; reason = f"parse hiba: {e}"
         if needs_fix:
-            with open(fname, 'w') as f:
-                json.dump(default, f)
-            log.warning(f"[init] {fname} → {reason}, alapértékre állítva: {default}")
+            with open(fname, 'w') as f: json.dump(default, f)
+            log.warning(f"[init] {fname} → {reason}, alapértékre állítva")
             fixed_files.append(fname)
         else:
             log.debug(f"[init] {fname} OK")
@@ -168,21 +159,13 @@ def send_telegram(message, file_path=None):
         log.error(f"[send_telegram] Hiba: {e}")
 
 def load_json(file, default, expected_type=None):
-    """
-    JSON fájl betöltése. Ha a fájl típusa nem egyezik az elvárttal,
-    azonnal felülírja a fájlt a default értékkel (öngyógyítás),
-    így a következő olvasásig már helyes tartalmat talál.
-    """
     if os.path.exists(file):
         try:
-            with open(file, 'r') as f:
-                data = json.load(f)
+            with open(file, 'r') as f: data = json.load(f)
             if expected_type is not None and not isinstance(data, expected_type):
                 log.error(f"[load_json] {file} hibás típus: várt={expected_type.__name__}, "
                           f"kapott={type(data).__name__} → felülírva default értékkel")
-                # Öngyógyítás: azonnal írjuk vissza a helyes formátumot
-                with open(file, 'w') as fw:
-                    json.dump(default, fw)
+                with open(file, 'w') as fw: json.dump(default, fw)
                 return default
             return data
         except Exception as e:
@@ -194,6 +177,7 @@ def save_json(file, data):
     with open(file, 'w') as f: json.dump(data, f)
 
 def sync_to_github(file_list, commit_message, delete_files=None):
+    """Fájlokat push-ol GitHubra. A .gitignore által kizárt fájlokat -f flag-gel adjuk hozzá."""
     if not GITHUB_TOKEN: return
     try:
         subprocess.run(["git", "config", "--global", "user.email", "bot@livemester.com"])
@@ -202,10 +186,16 @@ def sync_to_github(file_list, commit_message, delete_files=None):
         subprocess.run(["git", "remote", "remove", "origin"], stderr=subprocess.DEVNULL)
         subprocess.run(["git", "remote", "add", "origin", auth_url])
         if delete_files:
-            for df in delete_files: subprocess.run(["git", "rm", df], stderr=subprocess.DEVNULL)
+            for df in delete_files:
+                subprocess.run(["git", "rm", "--cached", df], stderr=subprocess.DEVNULL)
         for f in file_list:
-            if os.path.exists(f): subprocess.run(["git", "add", f])
-        subprocess.run(["git", "commit", "-m", commit_message])
+            if os.path.exists(f):
+                # -f (force) szükséges a .gitignore által kizárt fájlokhoz (json cache, xlsx, log)
+                subprocess.run(["git", "add", "-f", f])
+        result = subprocess.run(["git", "commit", "-m", commit_message], capture_output=True, text=True)
+        if "nothing to commit" in result.stdout:
+            log.debug(f"[github] Nincs változás, commit átugorva: {commit_message}")
+            return
         subprocess.run(["git", "push", "origin", "HEAD:main", "--force"])
         log.debug(f"[github] Szinkronizálva: {commit_message}")
     except Exception as e:
@@ -409,27 +399,38 @@ def fetch_live_fixtures():
         return []
 
 def fetch_live_odds(fixture_id):
+    """
+    Live Over 1.5 odds lekérése RETRY_MAX kísérlettel.
+    Javított logika: ha az odds nem található a válaszban (de a kérés sikeres volt),
+    ne ugorjon ki azonnal — folytassa a következő kísérlettel rövid várakozás után.
+    """
     for attempt in range(RETRY_MAX):
         resp = api_get_with_retry(f"{BASE_URL}/odds/live", params={"fixture": fixture_id}, max_retries=1)
         if resp is None:
             wait = RETRY_BACKOFF * (attempt + 1)
-            log.warning(f"[fetch_live_odds] Válasz None ({attempt+1}/{RETRY_MAX}), vár {wait}s | {fixture_id}")
-            time.sleep(wait); continue
+            log.warning(f"[fetch_live_odds] Nincs válasz ({attempt+1}/{RETRY_MAX}), vár {wait}s | {fixture_id}")
+            time.sleep(wait)
+            continue
         try:
             for item in resp.json().get("response", []):
                 for bm in item.get("odds", []):
                     for bet in bm.get("bets", []):
-                        if "total" not in (bet.get("name") or "").lower() and \
-                           "goals" not in (bet.get("name") or "").lower():
+                        name = (bet.get("name") or "").lower()
+                        if "total" not in name and "goals" not in name:
                             continue
                         for val in bet.get("values", []):
                             if str(val.get("value") or "").lower() in ("over 1.5", "o 1.5", "over1.5"):
-                                try: return float(val["odd"])
-                                except (ValueError, TypeError): pass
+                                try:
+                                    return float(val["odd"])  # siker — azonnal visszatérünk
+                                except (ValueError, TypeError):
+                                    pass
         except Exception as e:
             log.warning(f"[fetch_live_odds] JSON parse hiba ({fixture_id}): {e}")
-        log.debug(f"[fetch_live_odds] Over 1.5 nem található ({fixture_id}).")
-        return None
+        # Válasz megérkezett, de az Over 1.5 érték nem volt benne — vár és próbál újra
+        if attempt < RETRY_MAX - 1:
+            wait = RETRY_BACKOFF * (attempt + 1)
+            log.debug(f"[fetch_live_odds] Over 1.5 nem található ({attempt+1}/{RETRY_MAX}), vár {wait}s | {fixture_id}")
+            time.sleep(wait)
     log.warning(f"[fetch_live_odds] Minden próbálkozás sikertelen ({fixture_id}).")
     return None
 
@@ -550,7 +551,7 @@ def scan_next_day():
     tz = pytz.timezone(TIMEZONE)
     target = (datetime.now(tz) + timedelta(days=1)).strftime('%Y-%m-%d')
     log.info(f"[scan] Deep Scan: {target}")
-    send_telegram(f"🔬 <b>EXPERT v5.7 Deep Scan: {target}</b>")
+    send_telegram(f"🔬 <b>EXPERT v5.8 Deep Scan: {target}</b>")
     try:
         resp = api_get_with_retry(f"{BASE_URL}/fixtures", params={"date": target})
         if resp is None:
@@ -591,7 +592,7 @@ def scan_next_day():
             save_json(CACHE_FILE, cache)
             fn = f"expert_lista_{target}.xlsx"; pd.DataFrame(valid).to_excel(fn, index=False)
             send_telegram(f"✅ Deep Scan kész! ({len(valid)} tipp)", fn)
-            sync_to_github([CACHE_FILE, fn, TEAM_STATS_CACHE_FILE], f"v5.7 Update: {target}")
+            sync_to_github([CACHE_FILE, fn, TEAM_STATS_CACHE_FILE], f"v5.8 Update: {target}")
     except Exception as e:
         log.error(f"[scan] Hiba: {e}"); send_telegram(f"⚠️ Scan hiba: {e}")
 
@@ -673,7 +674,7 @@ def get_final_report():
 def main_loop():
     tz = pytz.timezone(TIMEZONE)
     log.info("=" * 50)
-    log.info("Bot v5.7 elindult (Retry + Dashboard).")
+    log.info("Bot v5.8 elindult (EV filter + Live retry fix + git add -f).")
     log.info(f"LIVE_MIN_EV={LIVE_MIN_EV} | WINDOWS={LIVE_WINDOWS}")
     log.info(f"RETRY_MAX={RETRY_MAX} | RETRY_BACKOFF={RETRY_BACKOFF}s | RETRY_TIMEOUT={RETRY_TIMEOUT}s")
     log.info("=" * 50)
@@ -684,8 +685,8 @@ def main_loop():
         try:
             today_str   = now.strftime('%Y-%m-%d')
             now_str     = now.strftime('%H:%M')
-            cache_data = load_json(CACHE_FILE, {}, dict)
-            today_m    = cache_data.get(today_str, [])
+            cache_data  = load_json(CACHE_FILE, {}, dict)
+            today_m     = cache_data.get(today_str, [])
             if not isinstance(today_m, list):
                 log.error(f"[main_loop] today_m hibás típus ({type(today_m).__name__}), kiürítve.")
                 today_m = []
@@ -723,7 +724,14 @@ def main_loop():
                         log.warning(f"[main_loop] Nincs master tips – {today_str}"); continue
                     ev, model_p = get_ev_for_fixture(master_tips, mid)
                     if ev is None or ev < LIVE_MIN_EV:
-                        log.debug(f"[main_loop] {label} – EV={ev}, skip"); continue
+                        log.debug(f"[main_loop] {label} – EV={ev}, skip (min={LIVE_MIN_EV*100:.0f}%)"); continue
+                    # VALUE BET SZŰRÉS: ha van live odds és fair odds, csak akkor küldünk
+                    # ha live_odds >= fair_odds (pozitív várható érték)
+                    fair_odds = round(1.0 / model_p, 2) if model_p and model_p > 0 else None
+                    if lo is not None and fair_odds is not None and lo < fair_odds:
+                        log.info(f"[main_loop] {label} – EV OK de odds alacsony "
+                                 f"(live={lo} < fair={fair_odds}), skip (VALUE SZŰRÉS)")
+                        continue
                     po = get_prematch_odds_for_fixture(master_tips, mid)
                     ol = build_odds_line(lo, po, model_p, di)
                     msg = (f"⚽ <b>LIVE: Over 1.5 🔥</b>\n{label}\n"
@@ -733,7 +741,7 @@ def main_loop():
                            f"📊 EV: {ev*100:.1f}% | P: {f'{model_p*100:.1f}%' if model_p else 'N/A'}")
                     if ol: msg += f"\n{ol}"
                     send_telegram(msg)
-                    log.info(f"[ALERT] {label} | {min_}' | EV={ev*100:.1f}% | odds={lo}")
+                    log.info(f"[ALERT] {label} | {min_}' | EV={ev*100:.1f}% | odds={lo} | fair={fair_odds}")
                     save_sent_alert(today_str, mid)
                     hst = load_json(LIVE_HISTORY_FILE, [], list)
                     hst.append({"id": mid, "time": now_str, "ev": ev, "model_p": model_p,
@@ -747,5 +755,5 @@ def main_loop():
 
 if __name__ == "__main__":
     keep_alive()
-    init_state_files()  # állapotfájlok ellenőrzése, migrációja és GitHub szinkron
+    init_state_files()
     main_loop()
