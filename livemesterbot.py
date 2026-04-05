@@ -110,13 +110,13 @@ def api_get_with_retry(url, params=None, max_retries=RETRY_MAX, backoff=RETRY_BA
 
 
 # =========================================================
-# FÁJL INICIALIZÁCIÓ — induláskor helyes formátum garantium
+# FÁJL INICIALIZÁCIÓ — induláskor helyes formátum garantálva
 # =========================================================
 def init_state_files():
     """
-    Állapotfájlok inicializálása és migrációja indítkor.
-    Ha bármelyik fájl hiányzik vagy hibás típusú, újraírja a helyes alapertéket.
-    Ez megakadályozza, hogy régi [] alaperték miatt törön a bot.
+    Állapotfájlok inicializálása és migrációja indításkor.
+    Ha bármelyik fájl hiányzik vagy hibás típusú, újraírja a helyes alapértéket,
+    majd szinkronizálja vissza GitHubra, hogy a következő deploy is helyes fájlt kapjon.
     """
     fixes = [
         (SENT_ALERTS_FILE,  {},  dict),
@@ -124,6 +124,7 @@ def init_state_files():
         (LIVE_HISTORY_FILE, [],  list),
         (BACKTEST_FILE,     {"entries": []}, dict),
     ]
+    fixed_files = []
     for fname, default, expected_type in fixes:
         needs_fix = False
         if not os.path.exists(fname):
@@ -142,12 +143,16 @@ def init_state_files():
         if needs_fix:
             with open(fname, 'w') as f:
                 json.dump(default, f)
-            log.warning(f"[init] {fname} → {reason}, alapertékre állítva: {default}")
+            log.warning(f"[init] {fname} → {reason}, alapértékre állítva: {default}")
+            fixed_files.append(fname)
         else:
             log.debug(f"[init] {fname} OK")
+    if fixed_files:
+        log.info(f"[init] Javított fájlok GitHub-ra szinkronizálva: {fixed_files}")
+        sync_to_github(fixed_files, f"[init] state files migrated: {', '.join(fixed_files)}")
 
 
-# ========= SEGÉDFELVEVÉNY =========
+# ========= SEGÉDFÜGGVÉNYEK =========
 
 def send_telegram(message, file_path=None):
     try:
@@ -163,12 +168,21 @@ def send_telegram(message, file_path=None):
         log.error(f"[send_telegram] Hiba: {e}")
 
 def load_json(file, default, expected_type=None):
+    """
+    JSON fájl betöltése. Ha a fájl típusa nem egyezik az elvárttal,
+    azonnal felülírja a fájlt a default értékkel (öngyógyítás),
+    így a következő olvasásig már helyes tartalmat talál.
+    """
     if os.path.exists(file):
         try:
             with open(file, 'r') as f:
                 data = json.load(f)
             if expected_type is not None and not isinstance(data, expected_type):
-                log.error(f"[load_json] {file} hibás típus: várt={expected_type.__name__}, kapott={type(data).__name__} → default visszaadva")
+                log.error(f"[load_json] {file} hibás típus: várt={expected_type.__name__}, "
+                          f"kapott={type(data).__name__} → felülírva default értékkel")
+                # Öngyógyítás: azonnal írjuk vissza a helyes formátumot
+                with open(file, 'w') as fw:
+                    json.dump(default, fw)
                 return default
             return data
         except Exception as e:
@@ -733,5 +747,5 @@ def main_loop():
 
 if __name__ == "__main__":
     keep_alive()
-    init_state_files()  # állapotfájlok ellenőrzése és migrációja indításkor
+    init_state_files()  # állapotfájlok ellenőrzése, migrációja és GitHub szinkron
     main_loop()
