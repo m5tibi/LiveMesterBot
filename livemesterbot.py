@@ -113,16 +113,11 @@ def api_get_with_retry(url, params=None, max_retries=RETRY_MAX, backoff=RETRY_BA
 # POISSON MODEL — közös számítási segédfüggvények
 # =========================================================
 def poisson_over_prob(lam, threshold):
-    """
-    P(X > threshold) ahol X ~ Poisson(lam).
-    threshold: 1.5 → P(gól >= 2), 2.5 → P(gól >= 3)
-    """
-    k = int(threshold)  # 1.5 → 1, 2.5 → 2
+    k = int(threshold)
     cumulative = sum(math.exp(-lam) * (lam ** i) / math.factorial(i) for i in range(k + 1))
     return max(0.0, min(1.0, 1.0 - cumulative))
 
 def calc_ev(model_p, market_odds):
-    """Várható érték: EV = p * odds - 1"""
     if model_p is None or market_odds is None or market_odds <= 0:
         return None
     return round(model_p * market_odds - 1.0, 4)
@@ -201,7 +196,6 @@ def save_json(file, data):
     with open(file, 'w') as f: json.dump(data, f)
 
 def sync_to_github(file_list, commit_message, delete_files=None):
-    """Fájlokat push-ol GitHubra. A .gitignore által kizárt fájlokat -f flag-gel adjuk hozzá."""
     if not GITHUB_TOKEN: return
     try:
         subprocess.run(["git", "config", "--global", "user.email", "bot@livemester.com"])
@@ -429,10 +423,6 @@ def fetch_live_fixtures():
         return []
 
 def fetch_live_odds(fixture_id):
-    """
-    Live Over 1.5 odds lekérése RETRY_MAX kísérlettel.
-    Ha a válasz megérkezett de az odds nincs benne, vár és újra próbál.
-    """
     for attempt in range(RETRY_MAX):
         resp = api_get_with_retry(f"{BASE_URL}/odds/live", params={"fixture": fixture_id}, max_retries=1)
         if resp is None:
@@ -481,6 +471,23 @@ def get_live_shot_stats(fixture_id):
     except Exception as e:
         log.warning(f"[shot_stats] JSON parse hiba ({fixture_id}): {e}")
         return {"shots_on_goal": 0, "shots_total": 0, "dangerous_att": 0, "corner_total": 0}
+
+def fetch_fixture_corners(fixture_id):
+    """Lezárt meccs szögletszámát kéri le az /fixtures/statistics endpointról."""
+    resp = api_get_with_retry(f"{BASE_URL}/fixtures/statistics", params={"fixture": fixture_id}, max_retries=2)
+    if resp is None:
+        log.warning(f"[corners] Stat nem elérhető ({fixture_id})")
+        return 0
+    try:
+        total = 0
+        for team_stat in resp.json().get("response", []):
+            for stat in team_stat.get("statistics", []):
+                if stat.get("type") == "Corner Kicks":
+                    total += int(stat.get("value") or 0)
+        return total
+    except Exception as e:
+        log.warning(f"[corners] Parse hiba ({fixture_id}): {e}")
+        return 0
 
 def build_odds_line(live_odds, prematch_odds, model_p, drift_info=None):
     fair_odds = calc_fair_odds(model_p)
@@ -574,7 +581,7 @@ def in_live_window(e):
     return any(s <= e <= en for s, en in LIVE_WINDOWS)
 
 # =========================================================
-# SZKENNER — tips_YYYY-MM-DD.json mentéssel
+# SZKENNER
 # =========================================================
 
 def scan_next_day():
@@ -593,25 +600,18 @@ def scan_next_day():
         matches = resp.json().get("response", [])
         log.info(f"[scan] {len(matches)} meccs")
         valid = []
-        tips_entries = []  # tips_YYYY-MM-DD.json-ba kerül: model_p, ev, fair_odds
+        tips_entries = []
         for m in matches:
             hd = get_team_detailed_data(m['teams']['home']['id'])
             ad = get_team_detailed_data(m['teams']['away']['id'])
             if not hd or not ad: continue
-
-            # —— Poisson modell ——
-            # Várható gólok: home és away átlagok átlagának összege
             lam_h = (hd['avg_scored'] + ad['avg_conceded']) / 2
             lam_a = (ad['avg_scored'] + hd['avg_conceded']) / 2
-            lam   = lam_h + lam_a  # összes várható gól
-
+            lam   = lam_h + lam_a
             p_over15 = poisson_over_prob(lam, 1.5)
             p_over25 = poisson_over_prob(lam, 2.5)
-
             fair_o15 = calc_fair_odds(p_over15)
             fair_o25 = calc_fair_odds(p_over25)
-
-            # Pre-match odds lekérés az EV számításhoz
             prematch_o15 = None
             odds_resp = api_get_with_retry(
                 f"{BASE_URL}/odds",
@@ -630,13 +630,10 @@ def scan_next_day():
                                     except (ValueError, TypeError): pass
                 except Exception as e:
                     log.debug(f"[scan] Pre-match odds parse hiba ({m['fixture']['id']}): {e}")
-
             ev_o15 = calc_ev(p_over15, prematch_o15)
-
-            # —— Tipp döntés ——
             tips = []
             op = p_over25 * 100
-            if p_over25 > 0.82:  tips.append("Over 2.5")
+            if p_over25 > 0.82:   tips.append("Over 2.5")
             elif p_over15 > 0.68: tips.append("Over 1.5")
             if (hd['avg_scored'] > 1.1 and ad['avg_scored'] > 1.1
                     and hd['btts_trend'] >= 2 and ad['btts_trend'] >= 2):
@@ -646,14 +643,10 @@ def scan_next_day():
                 ec = hd['corner_avg'] + ad['corner_avg']; ci = round(ec, 1)
                 if ec >= 10.5: tips.append("Corners Over 8.5")
                 elif ec >= 9.2: tips.append("Corners Over 7.5")
-
             if not tips: continue
-
-            # EV jelölés a tipp melé
             ev_str = f"+{ev_o15*100:.1f}%" if ev_o15 is not None and ev_o15 > 0 else ""
             kick   = (datetime.fromisoformat(m['fixture']['date'][:19])
                       .replace(tzinfo=pytz.utc).astimezone(tz).strftime('%H:%M'))
-
             valid.append({
                 "ID":              m['fixture']['id'],
                 "ÍDŐPONT":          kick,
@@ -664,8 +657,6 @@ def scan_next_day():
                 "TIPP JAVASLAT":   " | ".join(tips),
                 "EV":              ev_str,
             })
-
-            # Tips JSON bejegyzés — a live loop ezt használja
             tips_entries.append({
                 "fixture_id": m['fixture']['id'],
                 "model_p":    round(p_over15, 4),
@@ -674,20 +665,14 @@ def scan_next_day():
                 "fair_odds":  {"over15": fair_o15, "over25": fair_o25},
                 "lambda":     round(lam, 3),
             })
-
         log.info(f"[scan] {len(valid)} tipp: {target}")
         if valid:
-            # Cache mentés
             cache = load_json(CACHE_FILE, {}, dict)
             cache[target] = valid
             save_json(CACHE_FILE, cache)
-
-            # Tips JSON mentés — live loop számára
             tips_fname = f"{MASTER_TIPS_PREFIX}{target}.json"
             save_json(tips_fname, {"date": target, "tips": tips_entries})
             log.info(f"[scan] Tips JSON mentve: {tips_fname} ({len(tips_entries)} bejegyzés)")
-
-            # Telegram üzenet — top 5 meccs
             lines = []
             for v in valid[:5]:
                 ev_badge = f" 💹 EV {v['EV']}" if v.get("EV") else ""
@@ -703,7 +688,6 @@ def scan_next_day():
                 f"━━━━━━━━━━━━━━━━━━━━\n"
                 + "\n".join(lines) + extra
             )
-
             fn = f"expert_lista_{target}.xlsx"
             pd.DataFrame(valid).to_excel(fn, index=False)
             send_telegram(msg, fn)
@@ -737,6 +721,7 @@ def get_final_report():
         f"📅 Dátum: <b>{yest}</b>"
     )
     final = []
+    gol_ok = gol_fail = 0
     for m in matches:
         try:
             resp = api_get_with_retry(f"{BASE_URL}/fixtures", params={"id": m['ID']})
@@ -744,23 +729,55 @@ def get_final_report():
                 log.warning(f"[report] Fixtures lekérés sikertelen: {m['ID']}"); continue
             r = resp.json().get("response", [])
             if r:
-                res = r[0]; h = res['goals']['home'] or 0; a = res['goals']['away'] or 0
+                res = r[0]
+                h = res['goals']['home'] or 0
+                a = res['goals']['away'] or 0
                 total_goals = h + a
-                c_total = 0
-                if 'statistics' in res:
-                    for ss in res['statistics']:
-                        for it in ss['statistics']:
-                            if it['type'] == 'Corner Kicks': c_total += (it['value'] or 0)
-                m["EREDMÉNY"] = f"{h}-{a}"
+
+                # FIX 1: szöglet külön API hívással
+                c_total = fetch_fixture_corners(m['ID'])
+
+                m["EREDMÉNY"]    = f"{h}-{a}"
                 tipp = m.get("TIPP JAVASLAT", "")
-                if "Over 2.5" in tipp: m["GÓL SIKER"] = "✅" if total_goals > 2.5 else "❌"
-                else:                  m["GÓL SIKER"] = "✅" if total_goals > 1.5 else "❌"
-                m["BTTS SIKER"]  = "✅" if h > 0 and a > 0 else "❌"
+                if "Over 2.5" in tipp:
+                    m["GÓL SIKER"] = "✅" if total_goals > 2.5 else "❌"
+                else:
+                    m["GÓL SIKER"] = "✅" if total_goals > 1.5 else "❌"
+                m["BTTS SIKER"]   = "✅" if h > 0 and a > 0 else "❌"
                 m["SZÖGLET ÖSSZ"] = c_total
-                log.info(f"[report] {m['MECCS']}: {h}-{a} | {m['GÓL SIKER']}")
+
+                if m["GÓL SIKER"] == "✅": gol_ok   += 1
+                else:                      gol_fail += 1
+
+                log.info(f"[report] {m['MECCS']}: {h}-{a} | {m['GÓL SIKER']} | szöglet={c_total}")
             final.append(m); time.sleep(1)
         except Exception as e:
             log.error(f"[report] Meccs hiba: {e}"); continue
+
+    # FIX 2: napi tipp összesítő üzenet
+    total_tips = gol_ok + gol_fail
+    hit_rate   = gol_ok / total_tips * 100 if total_tips else 0
+    emoji      = "🔥" if hit_rate >= 60 else ("✅" if hit_rate >= 45 else "⚠️")
+    summary_msg = (
+        f"📋 <b>NAPI TIPP KIÉRTÉKELÉS — {yest}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"{emoji} Gól tippek: <b>{gol_ok}/{total_tips}</b> ({hit_rate:.1f}%)\n"
+        f"✅ Sikeres: {gol_ok}  ❌ Sikertelen: {gol_fail}\n"
+    )
+    # Top 5 eredmény sorban
+    result_lines = []
+    for m in final[:5]:
+        ikon = "✅" if m.get("GÓL SIKER") == "✅" else "❌"
+        result_lines.append(
+            f"{ikon} {m['MECCS']} → <b>{m.get('EREDMÉNY','?')}</b> "
+            f"({m.get('TIPP JAVASLAT','?')})"
+        )
+    if result_lines:
+        summary_msg += "\n" + "\n".join(result_lines)
+    if len(final) > 5:
+        summary_msg += f"\n<i>...+{len(final)-5} meccs az xlsx-ben</i>"
+    send_telegram(summary_msg)
+
     live_history = load_json(LIVE_HISTORY_FILE, [], list)
     live_wins = 0
     if live_history:
@@ -783,14 +800,17 @@ def get_final_report():
     else:
         live_msg = "📱 <b>LIVE ÖSSZESITŐ</b>\nMa nem volt élő tipp."
         log.info("[report] Nincs live tipp.")
+
     fn = f"report_{yest}.xlsx"
     pd.DataFrame(final).to_excel(fn, index=False)
     send_telegram(live_msg, fn)
+
     if live_history:
         new_entries = update_backtest(live_history, yest)
         dashboard_msg = build_dashboard_message(new_entries)
         send_telegram(dashboard_msg)
         log.info(f"[backtest] Dashboard elküldve ({len(new_entries)} új bejegyzés)")
+
     deleted_files = cleanup_old_files()
     save_json(LIVE_HISTORY_FILE, [])
     save_json(ODDS_DRIFT_FILE, {})
@@ -869,7 +889,6 @@ def main_loop():
                         continue
                     po = get_prematch_odds_for_fixture(master_tips, mid)
                     ol = build_odds_line(lo, po, model_p, di)
-                    # —— Telegram üzenet ——
                     activity_bar = "🟢" if ss['shots_on_goal'] >= 5 else ("🟡" if ss['shots_on_goal'] >= 3 else "🔴")
                     msg = (
                         f"⚽ <b>LIVE ALERT — Over 1.5 🔥</b>\n"
