@@ -18,6 +18,54 @@ GLOBAL_AVG_GOALS = 2.65
 # Hazai pálya előny szorzó (meta-analízis: ~12% gól-többlet)
 HOME_ADVANTAGE = 1.12
 
+# =========================================================
+# EV SZŰRŐ KÜSZÖBÖK — piaconként
+# =========================================================
+# Magyarázat:
+#   min_ev:  minimális elvárt Expected Value (pl. 0.04 = 4% EV)
+#   min_p:   modell valószínűség alsó határa
+#   max_p:   modell valószínűség felső határa
+#             (max_p=0.92 → a 92%+ esélyek is bekerülnek, nem dobjuk ki)
+#   min_o:   odds alsó határa (nagyon alacsony odds = nem éri meg)
+#   max_o:   odds felső határa (nagyon magas odds = túl kockázatos)
+#
+# Profil-szűrők:
+#   blocked_profiles: ezeken a meccs-profilokon NEM adjuk a tippet
+#     'C' = zárt/defenzív meccs  → over25 és btts NEM ajánlott
+#     'D' = vegyes                → over25 óvatosan, btts tiltva
+
+MARKET_CONFIG = {
+    "over15": {
+        "min_ev":          0.04,   # volt: 0.025 → emelve, kevesebb "szemét" tipp
+        "min_p":           0.62,   # volt: 0.60
+        "max_p":           0.92,   # volt: 0.85 → a nagyon biztos esélyek sem esnek ki
+        "min_o":           1.30,   # volt: 1.35 → kicsit tágabb odds-sáv
+        "max_o":           1.85,   # volt: 1.80
+        "blocked_profiles": ["C"], # zárt meccsen ne ajánljunk Over 1.5-öt sem
+    },
+    "over25": {
+        "min_ev":          0.05,   # volt: 0.04
+        "min_p":           0.50,   # volt: 0.48
+        "max_p":           0.72,   # volt: 0.68 → tágabb felső határ
+        "min_o":           1.70,   # volt: 1.75 → kissé tágabb
+        "max_o":           2.80,   # volt: 2.70
+        "blocked_profiles": ["C", "D"],  # zárt és vegyes meccsen tiltva
+    },
+    "btts_yes": {
+        "min_ev":          0.06,   # volt: 0.05
+        "min_p":           0.50,   # volt: 0.48
+        "max_p":           0.72,   # volt: 0.68
+        "min_o":           1.75,   # volt: 1.80 → kissé tágabb
+        "max_o":           3.20,   # változatlan
+        "blocked_profiles": ["C", "D"],  # defenzív/vegyes meccsen tiltva
+    },
+}
+
+# Hány tipp engedélyezett ugyanarról a meccsről?
+# Ha 1: csak a legjobb EV marad (régi viselkedés)
+# Ha 2: pl. over15 ÉS over25 is bekerülhet, ha mindkettő erős
+MAX_TIPS_PER_FIXTURE = 2
+
 
 # =========================================================
 # LIGA KONFIGURÁCIÓ
@@ -101,13 +149,13 @@ def compute_basic_stats_from_matches(
         over15_rate, over25_rate, btts_rate, avg_corners
     """
     empty = {
-        "goals_for_per_match": 0.0,
+        "goals_for_per_match":     0.0,
         "goals_against_per_match": 0.0,
-        "over15_rate": 0.0,
-        "over25_rate": 0.0,
-        "btts_rate": 0.0,
-        "avg_corners": None,
-        "sample_size": 0,
+        "over15_rate":             0.0,
+        "over25_rate":             0.0,
+        "btts_rate":               0.0,
+        "avg_corners":             None,
+        "sample_size":             0,
     }
     if not matches:
         return empty
@@ -118,15 +166,14 @@ def compute_basic_stats_from_matches(
     n = 0
 
     for m in matches:
-        home_id = m["teams"]["home"]["id"]
-        away_id = m["teams"]["away"]["id"]
+        home_id    = m["teams"]["home"]["id"]
+        away_id    = m["teams"]["away"]["id"]
         goals_home = m["goals"]["home"]
         goals_away = m["goals"]["away"]
 
         if goals_home is None or goals_away is None:
             continue
 
-        # --- Oldal szűrő ---
         is_home_match = (team_id == home_id)
         is_away_match = (team_id == away_id)
 
@@ -135,7 +182,7 @@ def compute_basic_stats_from_matches(
         if side == "away" and not is_away_match:
             continue
         if not is_home_match and not is_away_match:
-            continue  # nem érintett csapat (nem fordulhat elő, de védelem)
+            continue
 
         g_for     = goals_home if is_home_match else goals_away
         g_against = goals_away if is_home_match else goals_home
@@ -174,21 +221,12 @@ def dixon_coles_lambda(
 ) -> float:
     """
     Dixon-Coles alapú várható gólszám (lambda) kiszámítása.
-
     Képlet: lambda = attack_avg * defence_avg / global_avg
-        - attack_avg:  a csapat átlagos rúgott góljai (hazai vagy idegenbeli)
-        - defence_avg: az ellenfél átlagos kapott góljai (hazai vagy idegenbeli)
-        - global_avg:  ligaátlag (normalizációhoz)
-        - home:        ha True, hazai pálya előny szorzó kerül alkalmazásra
-
-    Ez az ipari standard korrekció a Poisson-modellhez:
-    figyelembe veszi az ellenfél védekezési erejét is,
-    nem csak a saját támadást.
     """
     raw = (attack_avg * defence_avg) / max(global_avg, 0.01)
     if home:
         raw *= HOME_ADVANTAGE
-    return max(raw, 0.05)  # minimum 0.05 a stabilitáshoz
+    return max(raw, 0.05)
 
 
 # =========================================================
@@ -205,11 +243,8 @@ def poisson_cdf(lam: float, max_k: int) -> float:
 
 
 def prob_team_over_n5_goals(lam: float) -> float:
-    """
-    P(csapat >= 1 gól) — Poisson CDF alapján.
-    Pontosabb, mint a régi lépcsős goal_prob_from_avg().
-    """
-    return 1.0 - poisson_prob(lam, 0)  # = 1 - P(0 gól)
+    """P(csapat >= 1 gól) — Poisson CDF alapján."""
+    return 1.0 - poisson_prob(lam, 0)
 
 
 # =========================================================
@@ -220,10 +255,7 @@ def run_monte_carlo_simulation(
     away_lambda: float,
     simulations: int = 10_000,
 ) -> Dict[str, float]:
-    """
-    Poisson Monte Carlo szimuláció a valószínűségek finomításához.
-    A Dixon-Coles lambdákat veszi bemenetként.
-    """
+    """Poisson Monte Carlo szimuláció a valószínűségek finomításához."""
     h_goals = np.random.poisson(max(0.05, home_lambda), simulations)
     a_goals = np.random.poisson(max(0.05, away_lambda), simulations)
     total   = h_goals + a_goals
@@ -238,29 +270,17 @@ def run_monte_carlo_simulation(
 # FŐ MODELL — JAVÍTOTT VALÓSZÍNŰSÉG SZÁMÍTÁS
 # =========================================================
 def simple_model_probabilities(
-    home_stats_h: Dict,   # hazai csapat HAZAI meccs statjai
-    home_stats_a: Dict,   # hazai csapat IDEGENBELI meccs statjai (cross-check)
-    away_stats_a: Dict,   # vendég csapat IDEGENBELI meccs statjai
-    away_stats_h: Dict,   # vendég csapat HAZAI meccs statjai (cross-check)
+    home_stats_h: Dict,
+    home_stats_a: Dict,
+    away_stats_a: Dict,
+    away_stats_h: Dict,
 ) -> Dict[str, Any]:
-    """
-    Dixon-Coles korrigált lambda + Monte Carlo hibrid modell.
-
-    Változások a régi verzióhoz képest:
-    1. home_lambda = home_csapat_tamadás * vendeg_vedekeze / liga_átlag * HOME_ADVANTAGE
-    2. away_lambda = vendeg_csapat_tamadás * hazai_vedekeze / liga_átlag
-    3. Poisson CDF alapú team gólvalószínűség (nem lépcsős)
-    4. Hibrid súlyozás: 40% historikus, 60% Monte Carlo
-    """
-    # --- Dixon-Coles lambda számítás ---
-    # Hazai csapat várható góljai:
-    #   Saját hazai támadása × Vendég idegenbeli védekezése / liga_átlag × hazai szorzó
+    """Dixon-Coles korrigált lambda + Monte Carlo hibrid modell."""
     h_att = home_stats_h.get("goals_for_per_match") or 0.0
     h_def = home_stats_h.get("goals_against_per_match") or 0.0
     a_att = away_stats_a.get("goals_for_per_match") or 0.0
     a_def = away_stats_a.get("goals_against_per_match") or 0.0
 
-    # Cross-check: ha nincs elég hazai/idegenbeli adat, fallback az 'all' statokra
     h_sample = home_stats_h.get("sample_size", 0)
     a_sample = away_stats_a.get("sample_size", 0)
     if h_sample < 3:
@@ -273,10 +293,8 @@ def simple_model_probabilities(
     home_lambda = dixon_coles_lambda(h_att, a_def, GLOBAL_AVG_GOALS, home=True)
     away_lambda = dixon_coles_lambda(a_att, h_def, GLOBAL_AVG_GOALS, home=False)
 
-    # --- Monte Carlo szimuláció ---
     mc = run_monte_carlo_simulation(home_lambda, away_lambda)
 
-    # --- Historikus arányok (fallback) ---
     def avg_rates(s_h, s_a, key):
         vals = [v for v in [s_h.get(key), s_a.get(key)] if v is not None]
         return sum(vals) / len(vals) if vals else None
@@ -285,14 +303,12 @@ def simple_model_probabilities(
     hist_over25 = avg_rates(home_stats_h, away_stats_a, "over25_rate")
     hist_btts   = avg_rates(home_stats_h, away_stats_a, "btts_rate")
 
-    # Globális BTTS alap: 52% (európai top ligák átlaga)
     global_btts = 0.52
     if hist_btts is not None:
         hist_btts = 0.5 * hist_btts + 0.5 * global_btts
     else:
         hist_btts = global_btts
 
-    # --- Hibrid valószínűség: 40% historikus, 60% Monte Carlo ---
     def hybrid(hist, mc_val):
         if hist is None:
             return mc_val
@@ -302,7 +318,6 @@ def simple_model_probabilities(
     over25 = hybrid(hist_over25, mc["mc_over25"])
     btts   = hybrid(hist_btts,   mc["mc_btts"])
 
-    # --- Csapat gólvalószínűség: Poisson CDF (nem lépcsős!) ---
     home_team_over15 = prob_team_over_n5_goals(home_lambda)
     away_team_over15 = prob_team_over_n5_goals(away_lambda)
 
@@ -312,14 +327,13 @@ def simple_model_probabilities(
         "btts":                    round(btts,   4),
         "home_team_over15_goals":  round(home_team_over15, 4),
         "away_team_over15_goals":  round(away_team_over15, 4),
-        # Debug: lambdák láthatóak az output JSON-ban
         "_home_lambda":            round(home_lambda, 3),
         "_away_lambda":            round(away_lambda, 3),
     }
 
 
 # =========================================================
-# PROFIL ÉS ODDS LEKÉRÉS (változatlan)
+# PROFIL ÉS ODDS LEKÉRÉS
 # =========================================================
 def fetch_odds_for_fixture(api_key, base_url, fixture_id):
     params = {"fixture": fixture_id, "bookmaker": 8}  # Bet365
@@ -384,20 +398,30 @@ def derive_profile(
         and model_probs["over15"] >= 0.75
     )
     return {
-        "match_profile":    profile,
+        "match_profile":       profile,
         "safe_over_candidate": safe_over,
-        "avoid_outright":   profile in ("C", "D"),
+        "avoid_outright":      profile in ("C", "D"),
     }
 
 
 # =========================================================
-# TIPP GENERÁLÁS
+# TIPP GENERÁLÁS — JAVÍTOTT EV SZŰRŐ
 # =========================================================
 def generate_multi_market_tips_from_fixtures(
     fixtures: List[Dict[str, Any]],
     max_tips: int = 10,
     allowed_leagues: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
+    """
+    Tipp generálás MARKET_CONFIG alapú EV szűrővel.
+
+    Javítások a régi verzióhoz képest:
+    1. Profil-szűrés: 'C' profil (zárt meccs) meccsen over25/btts tiltva
+    2. max_p=0.92 → a 85%+ esélyek sem esnek ki (over15)
+    3. min_ev emelve piacon: over15: 0.04, over25: 0.05, btts: 0.06
+    4. MAX_TIPS_PER_FIXTURE=2: egy meccsen 2 különböző piac is bekerülhet,
+       ha mindkettő átmegy a szűrőn (pl. over15 + over25 egyszerre)
+    """
     raw_candidates: List[Dict[str, Any]] = []
 
     for fx in fixtures:
@@ -408,34 +432,75 @@ def generate_multi_market_tips_from_fixtures(
         probs   = fx.get("model_probabilities", {}) or {}
         odds    = fx.get("odds", {}) or {}
         derived = fx.get("derived_profile", {}) or {}
+        profile = derived.get("match_profile", "D")
         safe    = bool(derived.get("safe_over_candidate"))
 
-        def maybe_add(market, p, o, min_ev, min_p, max_p, min_o, max_o):
+        # odds dict-ben a btts kulcs neve 'btts', a market neve 'btts_yes' —
+        # az odds lekérőhöz igazítva:
+        odds_map = {
+            "over15":   odds.get("over15"),
+            "over25":   odds.get("over25"),
+            "btts_yes": odds.get("btts"),
+        }
+        prob_map = {
+            "over15":   probs.get("over15"),
+            "over25":   probs.get("over25"),
+            "btts_yes": probs.get("btts"),
+        }
+
+        for market, cfg in MARKET_CONFIG.items():
+            p = prob_map.get(market)
+            o = odds_map.get(market)
+
+            # Alapadatok hiánya
             if p is None or o is None:
-                return
+                continue
+
+            # ── PROFIL SZŰRŐ (ÚJ) ──────────────────────────────────────
+            # Ha a meccs profilja szerepel a tiltott profilok között,
+            # az adott piacon NEM ajánlunk tippet.
+            if profile in cfg["blocked_profiles"]:
+                continue
+
+            # ── EV ÉS ODDS SZŰRŐ ───────────────────────────────────────
             ev = (p * o) - 1.0
-            if ev >= min_ev and min_p <= p <= max_p and min_o <= o <= max_o:
-                raw_candidates.append({
-                    **fx,
-                    "market": market,
-                    "model_p": p,
-                    "odds": o,
-                    "ev": ev,
-                    "safe_over_candidate": safe,
-                })
+            if not (cfg["min_ev"] <= ev
+                    and cfg["min_p"] <= p <= cfg["max_p"]
+                    and cfg["min_o"] <= o <= cfg["max_o"]):
+                continue
 
-        maybe_add("over15",   probs.get("over15"),  odds.get("over15"),  0.025, 0.60, 0.85, 1.35, 1.80)
-        maybe_add("over25",   probs.get("over25"),  odds.get("over25"),  0.04,  0.48, 0.68, 1.75, 2.70)
-        maybe_add("btts_yes", probs.get("btts"),    odds.get("btts"),    0.05,  0.48, 0.68, 1.80, 3.20)
+            raw_candidates.append({
+                **fx,
+                "market":               market,
+                "model_p":              p,
+                "odds":                 o,
+                "ev":                   round(ev, 4),
+                "safe_over_candidate":  safe,
+                "match_profile":        profile,
+            })
 
-    # Legmagasabb EV megtartása meccsenkénti deduplikálással
-    best: Dict[Any, Dict] = {}
+    # ── DEDUPLIKÁCIÓ — max MAX_TIPS_PER_FIXTURE tipp/meccs ─────────────
+    # Meccsenként a legjobb EV-jű tipppeket tartjuk meg,
+    # de legfeljebb MAX_TIPS_PER_FIXTURE darabot.
+    # Azonos piacon belül csak a legjobb marad (nincs duplikált over15).
+    from collections import defaultdict
+    fixture_markets: Dict[Any, Dict[str, Dict]] = defaultdict(dict)
+
     for c in raw_candidates:
-        fid = c["fixture_id"]
-        if fid not in best or c["ev"] > best[fid]["ev"]:
-            best[fid] = c
+        fid    = c["fixture_id"]
+        market = c["market"]
+        # Ugyanolyan piacból csak a legmagasabb EV marad
+        if market not in fixture_markets[fid] or c["ev"] > fixture_markets[fid][market]["ev"]:
+            fixture_markets[fid][market] = c
 
-    deduped = sorted(best.values(), key=lambda x: (x["safe_over_candidate"], x["ev"]), reverse=True)
+    # Meccsenként EV szerint rendezve, legfeljebb MAX_TIPS_PER_FIXTURE tipp
+    deduped: List[Dict] = []
+    for fid, markets in fixture_markets.items():
+        top = sorted(markets.values(), key=lambda x: x["ev"], reverse=True)
+        deduped.extend(top[:MAX_TIPS_PER_FIXTURE])
+
+    # Végső rendezés: safe_over_candidate előre, azon belül EV szerint
+    deduped.sort(key=lambda x: (x["safe_over_candidate"], x["ev"]), reverse=True)
     return deduped[:max_tips]
 
 
@@ -461,8 +526,8 @@ def send_telegram_message_with_json(token, chat_id, tips_payload):
             "btts_yes": "Mindkét csapat szerez gólt: IGEN",
         }
         market_display = market_lk.get((t.get("market") or "").lower(), (t.get("market") or "").upper())
+        profile_emoji  = {"A": "🏆", "B": "⚡", "C": "🔒", "D": "🔀"}.get(t.get("match_profile"), "❓")
 
-        # Lambda értékek megjelenítése (debug)
         mp = t.get("model_probabilities", {})
         lam_str = ""
         if mp.get("_home_lambda") and mp.get("_away_lambda"):
@@ -470,7 +535,7 @@ def send_telegram_message_with_json(token, chat_id, tips_payload):
 
         lines.append(
             f"{emoji} <b>{t.get('home_team')} – {t.get('away_team')}</b>\n"
-            f"🏆 {t.get('league')} | ⏰ {time_str}\n"
+            f"🏆 {t.get('league')} | ⏰ {time_str} | {profile_emoji} Profil: {t.get('match_profile', '?')}\n"
             f"🎯 Tipp: <code>{market_display}</code>\n"
             f"📈 P: {t.get('model_p', 0)*100:.1f}% | EV: {t.get('ev', 0)*100:.1f}%{lam_str}\n"
             f"━━━━━━━━━━━━━━━━━━━━"
@@ -517,14 +582,13 @@ def main():
     if not api_key:
         raise RuntimeError("Hiányzik az API_FOOTBALL_KEY env változó.")
 
-    leagues_cfg       = load_league_config()
+    leagues_cfg        = load_league_config()
     allowed_league_ids = {l["league_id"] for l in leagues_cfg}
-    date_str          = get_tomorrow_date_str()
+    date_str           = get_tomorrow_date_str()
     print(f"▶ Napi foci master build: {date_str}")
 
     fixtures_raw = fetch_fixtures_for_date(api_key, base_url, leagues_cfg, date_str)
 
-    # Csapat stat cache — most két külön stat szettet tárolunk: hazai + idegenbeli
     team_stats_cache: Dict[int, Dict[str, Dict]] = {}
     fixtures_out: List[Dict[str, Any]] = []
 
@@ -537,7 +601,6 @@ def main():
         teams   = fx["teams"]
         home_id, away_id = teams["home"]["id"], teams["away"]["id"]
 
-        # --- Stat lekérés és cache (hazai/idegenbeli bontásban) ---
         for tid in (home_id, away_id):
             if tid not in team_stats_cache:
                 raw_matches = fetch_team_last_matches(api_key, base_url, tid, last_n=15)
@@ -550,12 +613,11 @@ def main():
         h_stats = team_stats_cache[home_id]
         a_stats = team_stats_cache[away_id]
 
-        # --- Dixon-Coles + hazai pálya előny modell ---
         model_probs = simple_model_probabilities(
-            home_stats_h = h_stats["home"],  # hazai csapat hazai statjai
-            home_stats_a = h_stats["all"],   # fallback: össz stat
-            away_stats_a = a_stats["away"],  # vendég idegenbeli statjai
-            away_stats_h = a_stats["all"],   # fallback: össz stat
+            home_stats_h = h_stats["home"],
+            home_stats_a = h_stats["all"],
+            away_stats_a = a_stats["away"],
+            away_stats_h = a_stats["all"],
         )
 
         odds    = fetch_odds_for_fixture(api_key, base_url, fixture["id"])
@@ -569,15 +631,12 @@ def main():
             "home_team":  teams["home"]["name"],
             "away_team":  teams["away"]["name"],
             "stats": {
-                # Hazai csapat
                 "home_last15_home_goals_for":     h_stats["home"]["goals_for_per_match"],
                 "home_last15_home_goals_against": h_stats["home"]["goals_against_per_match"],
                 "home_last15_home_sample":        h_stats["home"]["sample_size"],
-                # Vendég csapat
                 "away_last15_away_goals_for":     a_stats["away"]["goals_for_per_match"],
                 "away_last15_away_goals_against": a_stats["away"]["goals_against_per_match"],
                 "away_last15_away_sample":        a_stats["away"]["sample_size"],
-                # Össz arányok (over/btts)
                 "home_over15_rate":  h_stats["all"]["over15_rate"],
                 "home_over25_rate":  h_stats["all"]["over25_rate"],
                 "home_btts_rate":    h_stats["all"]["btts_rate"],
@@ -586,7 +645,7 @@ def main():
                 "away_btts_rate":    a_stats["all"]["btts_rate"],
             },
             "model_probabilities": model_probs,
-            "odds":           odds,
+            "odds":            odds,
             "derived_profile": derived,
         })
 
