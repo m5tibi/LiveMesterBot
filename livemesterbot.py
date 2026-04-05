@@ -52,10 +52,9 @@ DRIFT_DROP_THRESHOLD = 0.05
 DRIFT_RISE_THRESHOLD = 0.05
 
 # ========= RETRY KONFIGURÁCIÓ =========
-# Minden API hívás erre támaszkodik — egy helyen módosítható
-RETRY_MAX     = 3    # max ismétlés száma
-RETRY_BACKOFF = 4    # belső alapvárakozás (sec), exponenciálisan nő
-RETRY_TIMEOUT = 10   # egy API kérés timeout (sec)
+RETRY_MAX     = 3
+RETRY_BACKOFF = 4
+RETRY_TIMEOUT = 10
 
 
 # ========= LOGGER =========
@@ -78,65 +77,77 @@ log = setup_logger()
 
 
 # =========================================================
-# ÁLTALÁNOS RETRY SEGÉDFELEGGVENYs
+# ÁLTALÁNOS RETRY
 # =========================================================
 def api_get_with_retry(url, params=None, max_retries=RETRY_MAX, backoff=RETRY_BACKOFF, timeout=RETRY_TIMEOUT):
-    """
-    Általános API GET kérés exponenciális backoff retry logikával.
-
-    Kezelt esetek:
-      - 429 Rate limit: a "Retry-After" fejléc alapján vár, nem számít bele a max_retries-be
-      - Timeout:        újrapróbálkozik, legfeljebb max_retries-szer
-      - RequestException: hálózati hiba, újrapróbálkozik
-      - 5xx szerver hiba: újrapróbálkozik
-      - 4xx (nem 429): azonnal None-t ad vissza (nem érdemes próbálni)
-
-    Visszatér: requests.Response objektum, vagy None ha minden próbálkozás sikertelen.
-    """
     attempt = 0
     while attempt < max_retries:
         try:
             resp = requests.get(url, headers=HEADERS, params=params, timeout=timeout)
-
-            # Rate limit — várj Retry-After másodpercet (nem szám az ismétlés közé)
             if resp.status_code == 429:
                 retry_after = int(resp.headers.get("Retry-After", backoff * (2 ** attempt)))
                 log.warning(f"[api_retry] 429 Rate limit — vár {retry_after}s | {url}")
                 time.sleep(retry_after)
-                continue  # attempt NEM nő — ne vonja le a keretből
-
-            # 5xx szerver hiba — újrapróbál
+                continue
             if resp.status_code >= 500:
                 wait = backoff * (2 ** attempt)
                 log.warning(f"[api_retry] {resp.status_code} szerver hiba — vár {wait}s | {url}")
-                time.sleep(wait)
-                attempt += 1
-                continue
-
-            # 4xx (pl. 404, 401) — ne próbáld újra
+                time.sleep(wait); attempt += 1; continue
             if resp.status_code >= 400:
                 log.warning(f"[api_retry] {resp.status_code} kliens hiba — nincs retry | {url}")
                 return None
-
             return resp
-
         except requests.exceptions.Timeout:
             wait = backoff * (2 ** attempt)
             log.warning(f"[api_retry] Timeout ({attempt+1}/{max_retries}) — vár {wait}s | {url}")
-            time.sleep(wait)
-            attempt += 1
-
+            time.sleep(wait); attempt += 1
         except requests.exceptions.RequestException as e:
             wait = backoff * (2 ** attempt)
             log.warning(f"[api_retry] Hálózati hiba ({attempt+1}/{max_retries}): {e} — vár {wait}s")
-            time.sleep(wait)
-            attempt += 1
-
+            time.sleep(wait); attempt += 1
     log.error(f"[api_retry] Minden próbálkozás sikertelen: {url}")
     return None
 
 
-# ========= SEGÉDFELEGGVENYs =========
+# =========================================================
+# FÁJL INICIALIZÁCIÓ — induláskor helyes formátum garantium
+# =========================================================
+def init_state_files():
+    """
+    Állapotfájlok inicializálása és migrációja indítkor.
+    Ha bármelyik fájl hiányzik vagy hibás típusú, újraírja a helyes alapertéket.
+    Ez megakadályozza, hogy régi [] alaperték miatt törön a bot.
+    """
+    fixes = [
+        (SENT_ALERTS_FILE,  {},  dict),
+        (ODDS_DRIFT_FILE,   {},  dict),
+        (LIVE_HISTORY_FILE, [],  list),
+        (BACKTEST_FILE,     {"entries": []}, dict),
+    ]
+    for fname, default, expected_type in fixes:
+        needs_fix = False
+        if not os.path.exists(fname):
+            needs_fix = True
+            reason = "hiányzik"
+        else:
+            try:
+                with open(fname, 'r') as f:
+                    data = json.load(f)
+                if not isinstance(data, expected_type):
+                    needs_fix = True
+                    reason = f"hibás típus ({type(data).__name__} helyett {expected_type.__name__} kell)"
+            except Exception as e:
+                needs_fix = True
+                reason = f"parse hiba: {e}"
+        if needs_fix:
+            with open(fname, 'w') as f:
+                json.dump(default, f)
+            log.warning(f"[init] {fname} → {reason}, alapertékre állítva: {default}")
+        else:
+            log.debug(f"[init] {fname} OK")
+
+
+# ========= SEGÉDFELVEVÉNY =========
 
 def send_telegram(message, file_path=None):
     try:
@@ -246,17 +257,15 @@ def send_daily_log_summary():
 def update_backtest(live_history_entries, date_str):
     bt = load_json(BACKTEST_FILE, {"entries": []}, dict)
     if not isinstance(bt.get("entries"), list):
-        log.error(f"[backtest] Hibás backtest struktúra, alaphelyzetbe állítva.")
+        log.error("[backtest] Hibás struktúra, alaphelyzetbe állítva.")
         bt = {"entries": []}
     new_entries = []
-
     for lt in live_history_entries:
         fid     = lt.get("id")
         ev      = lt.get("ev") or 0
         model_p = lt.get("model_p")
         lo      = lt.get("live_odds")
         minute  = lt.get("minute", 0)
-
         won = False
         resp = api_get_with_retry(f"{BASE_URL}/fixtures", params={"id": fid})
         if resp is None:
@@ -269,25 +278,13 @@ def update_backtest(live_history_entries, date_str):
                 ga = r[0]["goals"]["away"] or 0
                 won = (gh + ga) > 1.5
         except Exception as e:
-            log.warning(f"[backtest] JSON parse hiba ({fid}): {e}")
-            continue
-
+            log.warning(f"[backtest] JSON parse hiba ({fid}): {e}"); continue
         fair_odds = round(1.0 / model_p, 4) if model_p and model_p > 0 else None
         value_bet = (lo is not None and fair_odds is not None and lo >= fair_odds)
-
-        entry = {
-            "date":      date_str,
-            "id":        fid,
-            "minute":    minute,
-            "ev":        round(ev, 4),
-            "live_odds": lo,
-            "fair_odds": fair_odds,
-            "value_bet": value_bet,
-            "won":       won,
-        }
+        entry = {"date": date_str, "id": fid, "minute": minute, "ev": round(ev, 4),
+                 "live_odds": lo, "fair_odds": fair_odds, "value_bet": value_bet, "won": won}
         new_entries.append(entry)
         log.info(f"[backtest] {fid} | ev={ev*100:.1f}% | value={value_bet} | won={won}")
-
     bt["entries"].extend(new_entries)
     save_json(BACKTEST_FILE, bt)
     return new_entries
@@ -295,65 +292,50 @@ def update_backtest(live_history_entries, date_str):
 def build_dashboard_message(new_entries):
     bt = load_json(BACKTEST_FILE, {"entries": []}, dict)
     all_e = bt.get("entries", [])
-    if not isinstance(all_e, list):
-        all_e = []
-
+    if not isinstance(all_e, list): all_e = []
     if not all_e:
         return "📊 <b>Dashboard</b>\nNincs elég adat még."
-
     total   = len(all_e)
     wins    = sum(1 for e in all_e if e.get("won"))
     hit_all = wins / total * 100 if total else 0
-
     value_e    = [e for e in all_e if e.get("value_bet")]
     no_value_e = [e for e in all_e if not e.get("value_bet")]
     v_wins  = sum(1 for e in value_e    if e.get("won"))
     nv_wins = sum(1 for e in no_value_e if e.get("won"))
     v_hit   = v_wins  / len(value_e)    * 100 if value_e    else 0
     nv_hit  = nv_wins / len(no_value_e) * 100 if no_value_e else 0
-
     w1_e = [e for e in all_e if 33 <= (e.get("minute") or 0) <= 43]
     w2_e = [e for e in all_e if 50 <= (e.get("minute") or 0) <= 65]
     w1_hit = sum(1 for e in w1_e if e.get("won")) / len(w1_e) * 100 if w1_e else 0
     w2_hit = sum(1 for e in w2_e if e.get("won")) / len(w2_e) * 100 if w2_e else 0
-
     def ev_bucket(e):
         ev = e.get("ev", 0)
-        if ev < 0.03:  return "2-3%"
-        if ev < 0.05:  return "3-5%"
-        if ev < 0.10:  return "5-10%"
+        if ev < 0.03: return "2-3%"
+        if ev < 0.05: return "3-5%"
+        if ev < 0.10: return "5-10%"
         return ">10%"
-
     buckets = {}
     for e in all_e:
         b = ev_bucket(e)
         buckets.setdefault(b, {"total": 0, "won": 0})
         buckets[b]["total"] += 1
         if e.get("won"): buckets[b]["won"] += 1
-
     ev_lines = ""
     for bname in ["2-3%", "3-5%", "5-10%", ">10%"]:
         bd = buckets.get(bname)
         if bd and bd["total"] > 0:
             pct = bd["won"] / bd["total"] * 100
             ev_lines += f"  EV {bname}: {bd['won']}/{bd['total']} ({pct:.0f}%)\n"
-
     today_won  = sum(1 for e in new_entries if e.get("won"))
     today_tot  = len(new_entries)
     today_line = f"Ma: {today_won}/{today_tot}" if today_tot else "Ma: nincs tipp"
-
     msg = (
-        f"📊 <b>VISSZAMÉRÉS DASHBOARD</b>\n"
-        f"━" * 22 + "\n"
-        f"🎯 Összes: {wins}/{total} ({hit_all:.1f}%)\n"
-        f"📅 {today_line}\n"
-        f"\n"
+        f"📊 <b>VISSZAMÉRÉS DASHBOARD</b>\n━" * 22 + "\n"
+        f"🎯 Összes: {wins}/{total} ({hit_all:.1f}%)\n📅 {today_line}\n\n"
         f"✅ VALUE tipek:    {v_wins}/{len(value_e)} ({v_hit:.1f}%)\n"
-        f"⚠️ Nem-VALUE:       {nv_wins}/{len(no_value_e)} ({nv_hit:.1f}%)\n"
-        f"\n"
+        f"⚠️ Nem-VALUE:       {nv_wins}/{len(no_value_e)} ({nv_hit:.1f}%)\n\n"
         f"⏱ Ablak 33-43':   {sum(1 for e in w1_e if e.get('won'))}/{len(w1_e)} ({w1_hit:.1f}%)\n"
-        f"⏱ Ablak 50-65':   {sum(1 for e in w2_e if e.get('won'))}/{len(w2_e)} ({w2_hit:.1f}%)\n"
-        f"\n"
+        f"⏱ Ablak 50-65':   {sum(1 for e in w2_e if e.get('won'))}/{len(w2_e)} ({w2_hit:.1f}%)\n\n"
         f"🔬 EV kalibáció:\n{ev_lines}"
     )
     return msg.strip()
@@ -398,13 +380,10 @@ def get_prematch_odds_for_fixture(master_tips, fixture_id):
     return (tip.get("odds") or {}).get("over15") if tip else None
 
 # =========================================================
-# LIVE API HÍVÁSOK — RETRY-AL
+# LIVE API HÍVÁSOK
 # =========================================================
 
 def fetch_live_fixtures():
-    """
-    Élő meccsek lekérése api_get_with_retry segítségével.
-    """
     resp = api_get_with_retry(f"{BASE_URL}/fixtures", params={"live": "all"})
     if resp is None:
         log.error("[fetch_live] Minden próbálkozás sikertelen.")
@@ -415,25 +394,13 @@ def fetch_live_fixtures():
         log.error(f"[fetch_live] JSON parse hiba: {e}")
         return []
 
-
 def fetch_live_odds(fixture_id):
-    """
-    Live Over 1.5 odds lekérése retry-al.
-    Ha az első próbálkozás None-t ad vissza (nem található az odds),
-    még RETRY_MAX-1-szer próbálja rövid várakozással.
-    """
     for attempt in range(RETRY_MAX):
-        resp = api_get_with_retry(
-            f"{BASE_URL}/odds/live",
-            params={"fixture": fixture_id},
-            max_retries=1,   # api_get_with_retry belső retry-ja 1 — külső ciklus kezeli
-        )
+        resp = api_get_with_retry(f"{BASE_URL}/odds/live", params={"fixture": fixture_id}, max_retries=1)
         if resp is None:
             wait = RETRY_BACKOFF * (attempt + 1)
             log.warning(f"[fetch_live_odds] Válasz None ({attempt+1}/{RETRY_MAX}), vár {wait}s | {fixture_id}")
-            time.sleep(wait)
-            continue
-
+            time.sleep(wait); continue
         try:
             for item in resp.json().get("response", []):
                 for bm in item.get("odds", []):
@@ -443,34 +410,20 @@ def fetch_live_odds(fixture_id):
                             continue
                         for val in bet.get("values", []):
                             if str(val.get("value") or "").lower() in ("over 1.5", "o 1.5", "over1.5"):
-                                try:
-                                    return float(val["odd"])
-                                except (ValueError, TypeError):
-                                    pass
+                                try: return float(val["odd"])
+                                except (ValueError, TypeError): pass
         except Exception as e:
             log.warning(f"[fetch_live_odds] JSON parse hiba ({fixture_id}): {e}")
-
-        # Odds nem található (valid válasz, de nincs Over 1.5 benne) — nincs értelme újrapróbálni
-        log.debug(f"[fetch_live_odds] Over 1.5 odds nem található ({fixture_id}), nem próbálja újra.")
+        log.debug(f"[fetch_live_odds] Over 1.5 nem található ({fixture_id}).")
         return None
-
     log.warning(f"[fetch_live_odds] Minden próbálkozás sikertelen ({fixture_id}).")
     return None
 
-
 def get_live_shot_stats(fixture_id):
-    """
-    Lövés- és aktivitás statisztikák lekérése retry-al.
-    Ha az API None-t ad, üres statokat ad vissza (nem blokkol).
-    """
-    resp = api_get_with_retry(
-        f"{BASE_URL}/fixtures/statistics",
-        params={"fixture": fixture_id},
-    )
+    resp = api_get_with_retry(f"{BASE_URL}/fixtures/statistics", params={"fixture": fixture_id})
     if resp is None:
         log.warning(f"[shot_stats] Adat nem elérhető ({fixture_id}), üres statokkal folytat.")
         return {"shots_on_goal": 0, "shots_total": 0, "dangerous_att": 0, "corner_total": 0}
-
     try:
         sr = resp.json().get("response", [])
         sog = soff = da = corn = 0
@@ -485,7 +438,6 @@ def get_live_shot_stats(fixture_id):
     except Exception as e:
         log.warning(f"[shot_stats] JSON parse hiba ({fixture_id}): {e}")
         return {"shots_on_goal": 0, "shots_total": 0, "dangerous_att": 0, "corner_total": 0}
-
 
 def build_odds_line(live_odds, prematch_odds, model_p, drift_info=None):
     fair_odds = round(1.0 / model_p, 2) if model_p and model_p > 0 else None
@@ -521,17 +473,12 @@ def check_odds_drift(fixture_id, current_odds, now_str):
     if chg <= -DRIFT_RISE_THRESHOLD: return {"prev": po, "pct": abs(chg) * 100, "direction": "rise"}
     return None
 
-# ========= STATISZTIKAI MOTOR =========
+# ========= CSAPAT ADATOK =========
 
 def get_team_detailed_data(team_id):
-    """
-    Csapat statisztikák lekérése és cache-elése.
-    API hívások api_get_with_retry-val — rate limit és timeout biztonságosan kezelve.
-    """
     cache = load_json(TEAM_STATS_CACHE_FILE, {}, dict)
     if str(team_id) in cache:
         return cache[str(team_id)]
-
     resp = api_get_with_retry(f"{BASE_URL}/fixtures", params={"team": team_id, "last": 10})
     if resp is None:
         log.warning(f"[team_data] Meccs adat nem elérhető ({team_id}).")
@@ -541,10 +488,7 @@ def get_team_detailed_data(team_id):
     except Exception as e:
         log.warning(f"[team_data] JSON parse hiba ({team_id}): {e}")
         return None
-
-    if not matches:
-        return None
-
+    if not matches: return None
     s = c = btts_count = 0
     corn_list = []
     for i, m in enumerate(matches):
@@ -552,8 +496,7 @@ def get_team_detailed_data(team_id):
         scored   = (m['goals']['home'] if is_h else m['goals']['away']) or 0
         conceded = (m['goals']['away'] if is_h else m['goals']['home']) or 0
         s += scored; c += conceded
-        if i < 5 and scored > 0 and conceded > 0:
-            btts_count += 1
+        if i < 5 and scored > 0 and conceded > 0: btts_count += 1
         if i < 5:
             st_resp = api_get_with_retry(
                 f"{BASE_URL}/fixtures/statistics",
@@ -569,7 +512,6 @@ def get_team_detailed_data(team_id):
                                 corn_list.append(stat['value'] or 0)
                 except Exception as e:
                     log.debug(f"[team_data] Corner parse hiba ({team_id}): {e}")
-
     res = {
         "avg_scored":   s / 10,
         "avg_conceded": c / 10,
@@ -579,7 +521,6 @@ def get_team_detailed_data(team_id):
     cache[str(team_id)] = res
     save_json(TEAM_STATS_CACHE_FILE, cache)
     return res
-
 
 def is_active_game(s):
     return (s["shots_on_goal"] >= SHOTS_ON_GOAL_MIN or
@@ -640,7 +581,7 @@ def scan_next_day():
     except Exception as e:
         log.error(f"[scan] Hiba: {e}"); send_telegram(f"⚠️ Scan hiba: {e}")
 
-# ========= JELENTÉS ÉS TAKARÍTÁS =========
+# ========= JELENTÉS =========
 
 def get_final_report():
     tz = pytz.timezone(TIMEZONE)
@@ -650,20 +591,18 @@ def get_final_report():
     cache = load_json(CACHE_FILE, {}, dict)
     matches = cache.get(yest, [])
     if not isinstance(matches, list):
-        log.error(f"[report] Hibás matches típus a cache-ben: {type(matches).__name__}")
+        log.error(f"[report] Hibás matches típus: {type(matches).__name__}")
         matches = []
     if not matches:
         log.info("[report] Nincs adat tegnap.")
         send_daily_log_summary(); return
-
     send_telegram(f"📊 <b>Összetett jelentés ({yest})</b>")
     final = []
     for m in matches:
         try:
             resp = api_get_with_retry(f"{BASE_URL}/fixtures", params={"id": m['ID']})
             if resp is None:
-                log.warning(f"[report] Fixtures lekérés sikertelen: {m['ID']}")
-                continue
+                log.warning(f"[report] Fixtures lekérés sikertelen: {m['ID']}"); continue
             r = resp.json().get("response", [])
             if r:
                 res = r[0]; h = res['goals']['home'] or 0; a = res['goals']['away'] or 0
@@ -683,7 +622,6 @@ def get_final_report():
             final.append(m); time.sleep(1)
         except Exception as e:
             log.error(f"[report] Meccs hiba: {e}"); continue
-
     live_history = load_json(LIVE_HISTORY_FILE, [], list)
     live_wins = 0
     if live_history:
@@ -700,17 +638,14 @@ def get_final_report():
     else:
         live_msg = "📱 <b>LIVE ÖSSZESITŐ:</b>\nMa nem volt élő tipp."
         log.info("[report] Nincs live tipp.")
-
     fn = f"report_{yest}.xlsx"
     pd.DataFrame(final).to_excel(fn, index=False)
     send_telegram(live_msg, fn)
-
     if live_history:
         new_entries = update_backtest(live_history, yest)
         dashboard_msg = build_dashboard_message(new_entries)
         send_telegram(dashboard_msg)
         log.info(f"[backtest] Dashboard elküldve ({len(new_entries)} új bejegyzés)")
-
     deleted_files = cleanup_old_files()
     save_json(LIVE_HISTORY_FILE, [])
     save_json(ODDS_DRIFT_FILE, {})
@@ -730,89 +665,73 @@ def main_loop():
     log.info("=" * 50)
     while True:
         now = datetime.now(tz)
-        if now.hour == 19 and now.minute == 0: scan_next_day();    time.sleep(61)
+        if now.hour == 19 and now.minute == 0: scan_next_day();     time.sleep(61)
         if now.hour == 0  and now.minute == 10: get_final_report(); time.sleep(61)
-
         try:
             today_str   = now.strftime('%Y-%m-%d')
             now_str     = now.strftime('%H:%M')
-
             cache_data = load_json(CACHE_FILE, {}, dict)
             today_m    = cache_data.get(today_str, [])
             if not isinstance(today_m, list):
                 log.error(f"[main_loop] today_m hibás típus ({type(today_m).__name__}), kiürítve.")
                 today_m = []
-
             sent_today  = load_sent_alerts(today_str)
             master_tips = load_master_tips_for_today(today_str)
-
             if today_m:
                 t_ids = [m['ID'] for m in today_m]
                 live_fixtures = fetch_live_fixtures()
                 log.debug(f"[main_loop] {len(live_fixtures)} élő meccs | {now_str}")
-
                 for fx in live_fixtures:
                     mid   = fx["fixture"]["id"]
                     min_  = fx["fixture"]["status"]["elapsed"] or 0
                     h, a  = (fx["goals"]["home"] or 0), (fx["goals"]["away"] or 0)
                     label = f"{fx['teams']['home']['name']} – {fx['teams']['away']['name']}"
-
                     if mid not in t_ids: continue
                     if (h + a) > 1:     continue
-
                     lo = fetch_live_odds(mid)
                     di = check_odds_drift(mid, lo, now_str)
-
                     if str(mid) in sent_today and di is not None:
                         log.info(f"[DRIFT] {label} | {di['direction']} {di['pct']:.1f}%")
                         if di["direction"] == "drop":
                             send_telegram(f"📉 <b>ODDS DRIFT — {label}</b>\n"
-                                          f"{di['prev']} → {lo} (-{di['pct']:.1f}%)\n"
-                                          f"🟢 Smart money — erősödő piac!")
+                                          f"{di['prev']} → {lo} (-{di['pct']:.1f}%)\n✅ Smart money!")
                         else:
                             send_telegram(f"📈 <b>ODDS DRIFT — {label}</b>\n"
-                                          f"{di['prev']} → {lo} (+{di['pct']:.1f}%)\n"
-                                          f"🟡 Gyengülő piac — óvatosság!")
+                                          f"{di['prev']} → {lo} (+{di['pct']:.1f}%)\n⚠️ Gyengülő piac!")
                         continue
-
-                    if str(mid) in sent_today:   continue
+                    if str(mid) in sent_today: continue
                     if not in_live_window(min_):
                         log.debug(f"[main_loop] {label} – {min_}' – ablakból kiesett"); continue
-
                     ss = get_live_shot_stats(mid)
                     if not is_active_game(ss):
                         log.debug(f"[main_loop] {label} – low activity, skip"); continue
-
                     if not master_tips:
                         log.warning(f"[main_loop] Nincs master tips – {today_str}"); continue
                     ev, model_p = get_ev_for_fixture(master_tips, mid)
                     if ev is None or ev < LIVE_MIN_EV:
                         log.debug(f"[main_loop] {label} – EV={ev}, skip"); continue
-
                     po = get_prematch_odds_for_fixture(master_tips, mid)
                     ol = build_odds_line(lo, po, model_p, di)
-
                     msg = (f"⚽ <b>LIVE: Over 1.5 🔥</b>\n{label}\n"
                            f"📍 {h}–{a} ({min_}. perc)\n"
-                           f"🎯 Kapura tartó: {ss['shots_on_goal']} | Összes lövés: {ss['shots_total']}\n"
+                           f"🎯 Kapura tartó: {ss['shots_on_goal']} | Összes: {ss['shots_total']}\n"
                            f"⚡ Veszélyes tám.: {ss['dangerous_att']}\n"
                            f"📊 EV: {ev*100:.1f}% | P: {f'{model_p*100:.1f}%' if model_p else 'N/A'}")
                     if ol: msg += f"\n{ol}"
-
                     send_telegram(msg)
                     log.info(f"[ALERT] {label} | {min_}' | EV={ev*100:.1f}% | odds={lo}")
                     save_sent_alert(today_str, mid)
-
                     hst = load_json(LIVE_HISTORY_FILE, [], list)
                     hst.append({"id": mid, "time": now_str, "ev": ev, "model_p": model_p,
                                  "shots_on": ss["shots_on_goal"], "shots_tot": ss["shots_total"],
                                  "score_live": f"{h}-{a}", "minute": min_,
                                  "live_odds": lo, "prematch_odds": po})
                     save_json(LIVE_HISTORY_FILE, hst)
-
         except Exception as e:
             log.error(f"[main_loop] Váratlan hiba: {e}")
         time.sleep(40)
 
 if __name__ == "__main__":
-    keep_alive(); main_loop()
+    keep_alive()
+    init_state_files()  # állapotfájlok ellenőrzése és migrációja indításkor
+    main_loop()
