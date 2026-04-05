@@ -9,3 +9,16 @@ logs/
 # Generált riportok (Telegramra már elküldve, repóban felesleges)
 report_*.xlsx
 expert_lista_*.xlsx
+
+# Runtime cache és history fájlok (futás közbeni, nem kell verziókezelni)
+foci_master_cache.json
+team_stats_cache.json
+odds_drift.json
+sent_alerts.json
+live_history.json
+backtest.json
+bot.log
+bot_*.log
+
+# Napi tipp fájlok (ideiglenes, Telegram-on már elküldve)
+tips_*.json
