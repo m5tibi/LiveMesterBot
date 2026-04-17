@@ -235,21 +235,35 @@ def load_sent_alerts(date_str):
     return data.get(date_str, [])
 
 def save_sent_alert(date_str, fixture_id):
+    """
+    Módosítva: Helyi mentés azonnal, de nincs GitHub push minden tippnél.
+    Ez megakadályozza a Render felesleges újraindulását.
+    """
     data = load_json(SENT_ALERTS_FILE, {}, dict)
     day_list = data.get(date_str, [])
     fid_str = str(fixture_id)
+    
     if fid_str not in day_list:
         day_list.append(fid_str)
         data[date_str] = day_list
         save_json(SENT_ALERTS_FILE, data)
-        sync_to_github([SENT_ALERTS_FILE], f"sent_alert: {date_str}/{fid_str}")
+        # sync_to_github kiveve innen, hogy ne legyen Auto-Deploy loop
+        log.info(f"✅ Alert mentve helyileg: {date_str}/{fid_str}")
 
 def cleanup_sent_alerts(today_str):
+    """
+    A napi takarítás során elmentjük a végleges állapotot a GitHubra is.
+    """
     data = load_json(SENT_ALERTS_FILE, {}, dict)
     tz = pytz.timezone(TIMEZONE)
     cutoff = (datetime.now(tz) - timedelta(days=2)).strftime('%Y-%m-%d')
+    
     cleaned = {k: v for k, v in data.items() if k >= cutoff}
-    if cleaned != data: save_json(SENT_ALERTS_FILE, cleaned)
+    if cleaned != data: 
+        save_json(SENT_ALERTS_FILE, cleaned)
+        # Csak naponta egyszer szinkronizálunk a repóba
+        sync_to_github([SENT_ALERTS_FILE], f"daily_cleanup_sent_alerts: {today_str}")
+        log.info("🧹 Régi riasztások takarítása és GitHub szinkronizáció kész.")
 
 # ========= LOG ÖSSZEFOGLALÓ =========
 
@@ -831,7 +845,7 @@ def main_loop():
     log.info("=" * 50)
     while True:
         now = datetime.now(tz)
-        if now.hour == 22 and now.minute == 10: scan_next_day();     time.sleep(61)
+        if now.hour == 22 and now.minute == 30: scan_next_day();     time.sleep(61)
         if now.hour == 0  and now.minute == 10: get_final_report(); time.sleep(61)
         try:
             today_str   = now.strftime('%Y-%m-%d')
