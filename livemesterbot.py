@@ -455,7 +455,7 @@ def fetch_live_odds(mid):
         except: continue
     return None
 
-def get_live_stats(mid):
+def get_live_shot_stats(mid):
     try:
         r = requests.get(f"{BASE_URL}/fixtures/statistics?fixture={mid}", headers=HEADERS, timeout=12)
         res = r.json().get("response", [])
