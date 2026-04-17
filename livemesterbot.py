@@ -218,6 +218,16 @@ def sync_to_github(file_list, commit_message, delete_files=None):
     except Exception as e:
         log.error(f"[github] Hiba: {e}")
 
+def clean_int(val):
+    """Eltávolítja a % jelet és egyéb karaktereket a számmá alakítás előtt."""
+    if val is None: return 0
+    try:
+        if isinstance(val, str):
+            val = val.replace('%', '').strip()
+        return int(float(val)) # float-on keresztül biztosabb, ha tizedespont is lenne
+    except (ValueError, TypeError):
+        return 0
+
 # ========= SENT ALERTS =========
 
 def load_sent_alerts(date_str):
@@ -452,25 +462,23 @@ def fetch_live_odds(fixture_id):
     log.warning(f"[fetch_live_odds] Minden próbálkozás sikertelen ({fixture_id}).")
     return None
 
-def get_live_shot_stats(fixture_id):
-    resp = api_get_with_retry(f"{BASE_URL}/fixtures/statistics", params={"fixture": fixture_id})
-    if resp is None:
-        log.warning(f"[shot_stats] Adat nem elérhető ({fixture_id}), üres statokkal folytat.")
-        return {"shots_on_goal": 0, "shots_total": 0, "dangerous_att": 0, "corner_total": 0}
+def get_live_stats(mid):
     try:
-        sr = resp.json().get("response", [])
-        sog = soff = da = corn = 0
-        for ts in sr:
-            for stat in ts.get("statistics", []):
-                t = stat.get("type", ""); v = int(stat.get("value") or 0)
-                if t == "Shots on Goal":       sog  += v
-                elif t == "Shots off Goal":    soff += v
-                elif t == "Dangerous Attacks": da   += v
-                elif t == "Corner Kicks":      corn += v
-        return {"shots_on_goal": sog, "shots_total": sog + soff, "dangerous_att": da, "corner_total": corn}
+        r = requests.get(f"{BASE_URL}/fixtures/statistics?fixture={mid}", headers=HEADERS, timeout=12)
+        res = r.json().get("response", [])
+        stats = {"shots_on_goal": 0, "shots_total": 0, "dangerous_att": 0}
+        if not res: return stats
+        for team_data in res:
+            for s in team_data.get('statistics', []):
+                t = s.get('type')
+                v = clean_int(s.get('value')) # Itt használjuk a javított függvényt
+                if t == 'Shots on Goal': stats["shots_on_goal"] += v
+                if t in ['Shots on Goal', 'Shots off Goal']: stats["shots_total"] += v
+                if t == 'Dangerous Attacks': stats["dangerous_att"] += v
+        return stats
     except Exception as e:
-        log.warning(f"[shot_stats] JSON parse hiba ({fixture_id}): {e}")
-        return {"shots_on_goal": 0, "shots_total": 0, "dangerous_att": 0, "corner_total": 0}
+        log.warning(f"[shot_stats] Hiba ({mid}): {e}")
+        return {"shots_on_goal": 0, "shots_total": 0, "dangerous_att": 0}
 
 def fetch_fixture_corners(fixture_id):
     """Lezárt meccs szögletszámát kéri le az /fixtures/statistics endpointról."""
@@ -730,8 +738,8 @@ def get_final_report():
             r = resp.json().get("response", [])
             if r:
                 res = r[0]
-                h = res['goals']['home'] or 0
-                a = res['goals']['away'] or 0
+                h = clean_int(fx['goals']['home'])
+                a = clean_int(fx['goals']['away'])
                 total_goals = h + a
 
                 # FIX 1: szöglet külön API hívással
