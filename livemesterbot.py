@@ -432,34 +432,27 @@ def fetch_live_fixtures():
         log.error(f"[fetch_live] JSON parse hiba: {e}")
         return []
 
-def fetch_live_odds(fixture_id):
-    for attempt in range(RETRY_MAX):
-        resp = api_get_with_retry(f"{BASE_URL}/odds/live", params={"fixture": fixture_id}, max_retries=1)
-        if resp is None:
-            wait = RETRY_BACKOFF * (attempt + 1)
-            log.warning(f"[fetch_live_odds] Nincs válasz ({attempt+1}/{RETRY_MAX}), vár {wait}s | {fixture_id}")
-            time.sleep(wait)
-            continue
+def fetch_live_odds(mid):
+    params = {"fixture": mid, "bet": 11} # Over/Under
+    for _ in range(2):
         try:
-            for item in resp.json().get("response", []):
-                for bm in item.get("odds", []):
-                    for bet in bm.get("bets", []):
-                        name = (bet.get("name") or "").lower()
-                        if "total" not in name and "goals" not in name:
-                            continue
-                        for val in bet.get("values", []):
-                            if str(val.get("value") or "").lower() in ("over 1.5", "o 1.5", "over1.5"):
-                                try:
-                                    return float(val["odd"])
-                                except (ValueError, TypeError):
-                                    pass
-        except Exception as e:
-            log.warning(f"[fetch_live_odds] JSON parse hiba ({fixture_id}): {e}")
-        if attempt < RETRY_MAX - 1:
-            wait = RETRY_BACKOFF * (attempt + 1)
-            log.debug(f"[fetch_live_odds] Over 1.5 nem található ({attempt+1}/{RETRY_MAX}), vár {wait}s | {fixture_id}")
-            time.sleep(wait)
-    log.warning(f"[fetch_live_odds] Minden próbálkozás sikertelen ({fixture_id}).")
+            r = requests.get(f"{BASE_URL}/odds", headers=HEADERS, params=params, timeout=10)
+            res = r.json().get("response", [])
+            if res:
+                # Először próbáljuk a Bet365-öt (ID: 8)
+                for bm in res[0].get('bookmakers', []):
+                    if bm['id'] == 8:
+                        for bet in bm.get('bets', []):
+                            for val in bet.get('values', []):
+                                if val['value'] == 'Over 1.5': return float(val['odd'])
+                
+                # Ha nincs Bet365, jó bármelyik másik iroda (pl. 1xBet, Marathonbet stb.)
+                for bm in res[0].get('bookmakers', []):
+                    for bet in bm.get('bets', []):
+                        for val in bet.get('values', []):
+                            if val['value'] == 'Over 1.5': return float(val['odd'])
+            time.sleep(1)
+        except: continue
     return None
 
 def get_live_stats(mid):
