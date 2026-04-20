@@ -845,7 +845,7 @@ def main_loop():
     log.info("=" * 50)
     while True:
         now = datetime.now(tz)
-        if now.hour == 22 and now.minute == 30: scan_next_day();     time.sleep(61)
+        if now.hour == 16 and now.minute == 10: scan_next_day();     time.sleep(61)
         if now.hour == 0  and now.minute == 10: get_final_report(); time.sleep(61)
         try:
             today_str   = now.strftime('%Y-%m-%d')
